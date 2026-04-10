@@ -325,7 +325,7 @@ else:
                 else: st.info("🎉 Tuyệt vời! Thầy/Cô đảm bảo 100% công giảng dạy.")
             else: st.info("Hệ thống hiện chưa có dữ liệu biến động nào.")
 
-    # ==========================================
+   # ==========================================
     # 6. CHỨC NĂNG BGH (DASHBOARD & EXCEL TEMPLATE)
     # ==========================================
     elif st.session_state.role == "BGH":
@@ -349,8 +349,8 @@ else:
                 mask = (df_ngoai_le['Ngày chuẩn'].dt.date >= start_date) & (df_ngoai_le['Ngày chuẩn'].dt.date <= end_date)
                 df_filtered = df_ngoai_le.loc[mask].copy()
 
-            dict_gv_ten = pd.Series(ds_gv['Họ tên Giáo viên'].values, index=ds_gv['Mã định danh']).to_dict()
-            dict_gv_to = pd.Series(ds_gv['Tổ chuyên môn'].values, index=ds_gv['Mã định danh']).to_dict()
+            dict_gv_ten = pd.Series(ds_gv['Họ tên Giáo viên'].values, index=ds_gv['Mã định danh'].astype(str)).to_dict()
+            dict_gv_to = pd.Series(ds_gv['Tổ chuyên môn'].values, index=ds_gv['Mã định danh'].astype(str)).to_dict()
             
             if not df_filtered.empty:
                 df_filtered['Giáo viên Vắng'] = df_filtered['ID GV vắng'].astype(str).map(dict_gv_ten).fillna("Không rõ")
@@ -363,22 +363,27 @@ else:
         with tab1:
             st.subheader("Nhật ký Biến động Tổng quát")
             tong_su_co = len(df_filtered)
-            so_ca_day_thay = len(df_filtered[df_filtered['ID GV dạy thay'] != '']) if not df_filtered.empty else 0
+            so_ca_day_thay = len(df_filtered[df_filtered['ID GV dạy thay'].astype(str) != '']) if not df_filtered.empty else 0
             col1, col2, col3 = st.columns(3)
             col1.metric("Tổng tiết báo vắng", tong_su_co)
             col2.metric("Số tiết đã Dạy thay", so_ca_day_thay, delta_color="normal")
             col3.metric("Số tiết Lớp tự học", tong_su_co - so_ca_day_thay, delta_color="inverse")
             if not df_filtered.empty:
-                st.dataframe(df_filtered[['Ngày', 'Tiết', 'Lớp', 'Môn', 'Giáo viên Vắng', 'Giáo viên Dạy thay', 'Ghi chú']], use_container_width=True)
+                # Bổ sung cột Thứ
+                st.dataframe(df_filtered[['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Giáo viên Vắng', 'Giáo viên Dạy thay', 'Ghi chú']], use_container_width=True)
             else: st.info("🎉 Trường đang hoạt động ổn định, chưa phát sinh ca vắng/dạy thay nào.")
         
         with tab2:
             st.subheader("Thống kê theo Tổ Chuyên môn")
             if not df_filtered.empty:
-                df_to_vang = df_filtered.groupby('Tổ Vắng').size().reset_index(name='Số tiết Vắng')
-                df_to_thay = df_filtered[df_filtered['Tổ Dạy thay'] != "Không có"].groupby('Tổ Dạy thay').size().reset_index(name='Số tiết Dạy thay')
-                df_to_tonghop = pd.merge(df_to_vang, df_to_thay, left_on='Tổ Vắng', right_on='Tổ Dạy thay', how='outer').fillna(0)
-                df_to_tonghop['Tổ chuyên môn'] = df_to_tonghop['Tổ Vắng'].combine_first(df_to_tonghop['Tổ Dạy thay'])
+                # Fix lỗi 0 bằng cách gộp độc lập dựa trên Index (Tổ)
+                s_vang = df_filtered[df_filtered['Tổ Vắng'] != "Không rõ"].groupby('Tổ Vắng').size().rename('Số tiết Vắng')
+                s_thay = df_filtered[df_filtered['Tổ Dạy thay'] != "Không có"].groupby('Tổ Dạy thay').size().rename('Số tiết Dạy thay')
+                
+                df_to_tonghop = pd.concat([s_vang, s_thay], axis=1).fillna(0).astype(int)
+                df_to_tonghop.index.name = 'Tổ chuyên môn'
+                df_to_tonghop = df_to_tonghop.reset_index()
+                
                 st.dataframe(df_to_tonghop[['Tổ chuyên môn', 'Số tiết Vắng', 'Số tiết Dạy thay']], use_container_width=True)
             else: st.info("📭 Không có dữ liệu để thống kê theo tổ.")
 
@@ -422,6 +427,9 @@ else:
             gv_chon = st.selectbox("Chọn Giáo viên để xuất Excel:", ["-- Chọn Giáo viên --"] + ds_gv['HienThi_BGH'].tolist())
             
             def tao_excel_mau_avm(gv_dict, weeks, month, year, df_tkb_all, df_nl_all):
+                from copy import copy
+                from openpyxl.styles import Alignment
+                
                 try:
                     wb = openpyxl.load_workbook("BaoCaoMau.xlsx")
                 except FileNotFoundError:
@@ -490,7 +498,6 @@ else:
 
                             for w_idx, w in enumerate(weeks):
                                 if w_idx >= 5: break
-                                # Giữ nguyên dời sang cột D, G, J...
                                 col_idx = 4 + (w_idx * 3) 
                                 day = w['days'][thu_idx]
 
@@ -504,16 +511,26 @@ else:
                                         nl_dt_match = nl_gv_dt[(nl_gv_dt['Ngày'] == ngay_str) & (nl_gv_dt['Tiết'].astype(str) == str(tiet))]
                                         
                                         target_cell = ws.cell(row=row_idx, column=col_idx)
-                                        # Lấy thông số Font hiện tại của ô mẫu để không bị đổi cỡ chữ
-                                        current_font = target_cell.font
+                                        
+                                        new_font = copy(target_cell.font)
+                                        new_font.bold = True
+                                        new_align = copy(target_cell.alignment)
+                                        new_align.wrap_text = False
+                                        new_align.shrink_to_fit = False
                                         
                                         if not nl_v_match.empty:
-                                            target_cell.value = f"{base_class} (V)"
-                                            target_cell.font = Font(name=current_font.name, size=current_font.size, color="FF0000", bold=True)
+                                            # Fix: Lấy Tên lớp trực tiếp từ Ngoại lệ thay vì TKB
+                                            lop_v = nl_v_match.iloc[0]['Lớp']
+                                            target_cell.value = f"{lop_v} (V)"
+                                            new_font.color = "FF0000"
+                                            target_cell.font = new_font
+                                            target_cell.alignment = new_align
                                         elif not nl_dt_match.empty:
                                             lop_dt = nl_dt_match.iloc[0]['Lớp']
                                             target_cell.value = f"{lop_dt} (DT)" 
-                                            target_cell.font = Font(name=current_font.name, size=current_font.size, color="00B050", bold=True)
+                                            new_font.color = "00B050"
+                                            target_cell.font = new_font
+                                            target_cell.alignment = new_align
                                         else:
                                             if base_class:
                                                 target_cell.value = base_class
