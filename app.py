@@ -28,7 +28,7 @@ def init_connection():
 sheet = init_connection()
 
 # ==========================================
-# 2. HÀM QUÉT TKB MA TRẬN & XỬ LÝ LỊCH (Bản nâng cấp Mã TKB đa môn)
+# 2. HÀM QUÉT TKB MA TRẬN & XỬ LÝ LỊCH
 # ==========================================
 @st.cache_data(ttl=600) 
 def load_master_data():
@@ -42,6 +42,7 @@ def load_master_data():
         tkb_raw = sheet.worksheet("TKB_PhanCong").get_all_values()
         df_tkb = pd.DataFrame(tkb_raw)
         classes = ["KHTN", "KHXH", "11A", "11C", "10A", "10C", "9A", "8A", "7A", "6A"]
+ 
         pc_data = []
         current_thu = "Thứ Hai" 
         current_tiet = ""
@@ -58,7 +59,7 @@ def load_master_data():
             
             val_tiet = str(df_tkb.iloc[row_idx, 1]).replace('.0', '').strip() if df_tkb.shape[1] > 1 else ""
             if val_tiet: current_tiet = val_tiet
-            
+  
             for col_idx, class_name in enumerate(classes, start=2): 
                 if col_idx < df_tkb.shape[1]:
                     cell = str(df_tkb.iloc[row_idx, col_idx]).strip()
@@ -67,10 +68,17 @@ def load_master_data():
                             parts = cell.split("-")
                             if len(parts) >= 2:
                                 mon = parts[0].strip()
-                                gv_short = parts[1].replace("T.", "").replace("C.", "").strip()
+                                gv_raw = parts[1].strip()
+                                
+                                # Loại bỏ các tiền tố phổ biến (không phân biệt hoa thường)
+                                gv_short = gv_raw
+                                for prefix in ["T.", "C.", "Mr.", "Mrs."]:
+                                    if gv_short.lower().startswith(prefix.lower()):
+                                        gv_short = gv_short[len(prefix):].strip()
+                                        break
                                 
                                 match = pd.DataFrame()
-                                # Ưu tiên 1: Quét Mã TKB. Hỗ trợ 1 GV có nhiều mã (VD: "Loan, LoanS") cách nhau bằng dấu phẩy
+                                # Ưu tiên 1: Quét Mã TKB
                                 if 'Mã TKB' in ds_gv.columns:
                                     mask = ds_gv['Mã TKB'].astype(str).apply(
                                         lambda x: gv_short.lower() in [code.strip().lower() for code in x.split(',')]
@@ -80,7 +88,7 @@ def load_master_data():
                                 # Ưu tiên 2: Fallback tìm chuỗi con trong Họ tên
                                 if match.empty and 'Họ tên Giáo viên' in ds_gv.columns:
                                     match = ds_gv[ds_gv['Họ tên Giáo viên'].str.contains(gv_short, case=False, na=False, regex=False)]
-                                
+                               
                                 if not match.empty:
                                     pc_data.append({
                                         "Lớp": class_name, "Môn học": mon,
@@ -89,7 +97,8 @@ def load_master_data():
                                         "Thứ": current_thu, "Tiết": current_tiet
                                     })
                                 else:
-                                    unmatched_log.append(f"⚠️ {current_thu} - Tiết {current_tiet} - Lớp {class_name}: Không tìm thấy GV cho ký hiệu '{gv_short}'")
+                                    # Vẫn xuất cảnh báo nếu không khớp để phát hiện lỗi nhập liệu (VD: ĐTN)
+                                    unmatched_log.append(f"⚠️ {current_thu} - Tiết {current_tiet} - Lớp {class_name}: Không tìm thấy GV cho ký hiệu '{gv_raw}'")
                         except Exception as e:
                             unmatched_log.append(f"❌ {current_thu} - Tiết {current_tiet} - Lớp {class_name}: Lỗi cấu trúc ô '{cell}'")
         
@@ -104,9 +113,8 @@ def load_master_data():
   
     return ds_gv, pc_chuyenmon, unmatched_log
 
-# Gọi hàm khởi tạo (Phải nằm ngoài hàm, sát lề trái)
-ds_gv, pc_chuyenmon, unmatched_log = load_master_data()
 
+# Gọi hàm khởi tạo
 ds_gv, pc_chuyenmon, unmatched_log = load_master_data()
 
 def get_month_calendar(year, month):
@@ -161,7 +169,7 @@ else:
         if st.button("🚪 Đăng xuất", use_container_width=True):
             st.session_state.logged_in = False
             st.rerun()
-        
+  
         # Bổ sung trạng thái hoạt động
         st.markdown("---")
         st.markdown(f"🟢 **Hệ thống Online**<br><small>Lần kết nối: {datetime.now().strftime('%H:%M:%S %d/%m')}</small>", unsafe_allow_html=True)
@@ -178,7 +186,7 @@ else:
             with col_date:
                 ngay_chon = st.date_input("🗓️ Chọn ngày ghi nhận:", value=datetime.now().date())
                 ngay_str = ngay_chon.strftime("%d/%m/%Y")
-                thu_hien_tai = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"][ngay_chon.weekday()]
+            thu_hien_tai = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"][ngay_chon.weekday()]
             
             if ngay_chon.weekday() == 6:
                 st.error("🔒 HỆ THỐNG ĐÃ KHÓA SỔ. Hôm nay là Chủ Nhật, không thể cập nhật dữ liệu.")
@@ -273,14 +281,25 @@ else:
                         
                         rp_final = pd.merge(rp_tkb, rp_vang, on='Khối', how='left').fillna(0)
                         rp_final = pd.merge(rp_final, rp_thay, on='Khối', how='left').fillna(0)
+
+                        # --- FIX LỖI VALUEERROR (ÉP KIỂU SỐ TRƯỚC KHI TÍNH TỔNG) ---
+                        cols_to_fix = ['Tổng TKB phải dạy', 'Số tiết Nghỉ (Vắng)', 'Số tiết Dạy thay']
+                        for col in cols_to_fix:
+                            if col not in rp_final.columns:
+                                rp_final[col] = 0
+                            rp_final[col] = pd.to_numeric(rp_final[col], errors='coerce').fillna(0)
+                        
                         rp_final['Tổng Thực Dạy'] = rp_final['Tổng TKB phải dạy'] - rp_final['Số tiết Nghỉ (Vắng)'] + rp_final['Số tiết Dạy thay']
                         
-                        rp_final.loc['TOÀN TRƯỜNG'] = rp_final.sum(numeric_only=True)
+                        # Chỉ tính tổng các cột số để tránh lỗi NaN truyền vào astype(int)
+                        tong_cong = rp_final[['Tổng TKB phải dạy', 'Số tiết Nghỉ (Vắng)', 'Số tiết Dạy thay', 'Tổng Thực Dạy']].sum()
+                        rp_final.loc['TOÀN TRƯỜNG'] = tong_cong
                         rp_final.at['TOÀN TRƯỜNG', 'Khối'] = "TOÀN TRƯỜNG"
                         
                         for col in ['Tổng TKB phải dạy', 'Số tiết Nghỉ (Vắng)', 'Số tiết Dạy thay', 'Tổng Thực Dạy']:
                             rp_final[col] = rp_final[col].astype(int)
-                            
+                        # --- KẾT THÚC ĐOẠN FIX ---
+
                         st.dataframe(rp_final, use_container_width=True)
                         st.success("✅ Đã tạo xong báo cáo tuần!")
             else:
@@ -299,6 +318,7 @@ else:
                 if not df_vang.empty: df_vang['Vai trò'] = "Vắng mặt (-)"
                 df_thay = df_ngoai_le[df_ngoai_le['ID GV dạy thay'].astype(str) == gv_id_str].copy()
                 if not df_thay.empty: df_thay['Vai trò'] = "Dạy thay (+)"
+                
                 df_ketqua = pd.concat([df_vang, df_thay])
                 if not df_ketqua.empty:
                     st.dataframe(df_ketqua[['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Vai trò', 'Loại ngoại lệ']], use_container_width=True)
@@ -365,7 +385,6 @@ else:
         with tab4:
             st.subheader("Dữ liệu Thời Khóa Biểu đang áp dụng")
             
-            # Khối cảnh báo lỗi quét TKB
             if unmatched_log:
                 with st.expander("⚠️ Cảnh báo: Có lỗi trong quá trình tự động quét TKB", expanded=True):
                     st.error("Các ô TKB sau đây bị sai cú pháp hoặc ký hiệu Giáo viên không khớp với DS_GV (Cột Mã TKB/Họ Tên). Vui lòng sửa lại trên file gốc:")
@@ -413,8 +432,6 @@ else:
                 template_ws_name = template_ws.title
 
                 danh_sach_thu = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"]
-                font_v = Font(color="FF0000", bold=True)
-                font_dt = Font(color="00B050", bold=True)
                 today_date = datetime.now().date()
 
                 for gv_id, gv_name in gv_dict.items():
@@ -427,12 +444,10 @@ else:
                     ws = wb.copy_worksheet(template_ws)
                     ws.title = gv_name[:31]
 
-                    # --- 1. ĐIỀN THÔNG TIN HEADER / FOOTER ---
                     ws['J4'] = gv_name           
                     ws['S4'] = month             
                     ws['L71'] = gv_name          
 
-                    # --- 2. ĐIỀN NGÀY THÁNG VÀO DÒNG 6 ---
                     last_day_of_month = calendar.monthrange(year, month)[1]
                     for w_idx, w in enumerate(weeks):
                         if w_idx >= 5: break 
@@ -460,7 +475,6 @@ else:
                             ws['O6'] = start_str         
                             ws['Q6'] = f"{last_day_of_month:02d}/{month:02d}" 
 
-                    # --- 3. ĐIỀN LỚP VÀO MA TRẬN TKB ---
                     for thu in danh_sach_thu:
                         thu_idx = danh_sach_thu.index(thu)
                         tkb_thu = tkb_gv[tkb_gv['Thứ'] == thu]
@@ -476,12 +490,12 @@ else:
 
                             for w_idx, w in enumerate(weeks):
                                 if w_idx >= 5: break
-                                col_idx = 3 + (w_idx * 3) 
+                                # Giữ nguyên dời sang cột D, G, J...
+                                col_idx = 4 + (w_idx * 3) 
                                 day = w['days'][thu_idx]
 
                                 if day != 0:
                                     ngay_iter = date(year, month, day)
-                                    # Kểm tra mốc thời gian (Chỉ ghi nhận từ hôm nay trở về trước)
                                     if ngay_iter > today_date:
                                         ws.cell(row=row_idx, column=col_idx, value="")
                                     else:
@@ -490,19 +504,21 @@ else:
                                         nl_dt_match = nl_gv_dt[(nl_gv_dt['Ngày'] == ngay_str) & (nl_gv_dt['Tiết'].astype(str) == str(tiet))]
                                         
                                         target_cell = ws.cell(row=row_idx, column=col_idx)
+                                        # Lấy thông số Font hiện tại của ô mẫu để không bị đổi cỡ chữ
+                                        current_font = target_cell.font
                                         
                                         if not nl_v_match.empty:
                                             target_cell.value = f"{base_class} (V)"
-                                            target_cell.font = font_v
+                                            target_cell.font = Font(name=current_font.name, size=current_font.size, color="FF0000", bold=True)
                                         elif not nl_dt_match.empty:
                                             lop_dt = nl_dt_match.iloc[0]['Lớp']
                                             target_cell.value = f"{lop_dt} (DT)" 
-                                            target_cell.font = font_dt
+                                            target_cell.font = Font(name=current_font.name, size=current_font.size, color="00B050", bold=True)
                                         else:
                                             if base_class:
                                                 target_cell.value = base_class
                                 else:
-                                    ws.cell(row=row_idx, column=col_idx, value="") # Bỏ dấu "-" thành khoảng trắng
+                                    ws.cell(row=row_idx, column=col_idx, value="")
 
                 if len(wb.sheetnames) > 1:
                     wb.remove(wb[template_ws_name])
