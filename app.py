@@ -330,9 +330,17 @@ else:
                 template_ws_name = template_ws.title
 
                 danh_sach_thu = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"]
+                # Đảm bảo danh sách khối luôn là chuỗi
+                danh_sach_khoi = ['6', '7', '8', '9', '10', '11', '12']
                 
                 font_v = Font(color="FF0000", bold=True)
                 font_dt = Font(color="00B050", bold=True)
+
+                def get_khoi(lop_str):
+                    lop_upper = str(lop_str).upper()
+                    if "KHTN" in lop_upper or "KHXH" in lop_upper: return '12'
+                    res = ''.join([c for c in str(lop_str) if c.isdigit()])
+                    return res if res in danh_sach_khoi else "Khác"
 
                 for gv_id, gv_name in gv_dict.items():
                     tkb_gv = df_tkb_all[df_tkb_all['Mã định danh'].astype(str) == gv_id]
@@ -350,14 +358,14 @@ else:
                     for w_idx, w in enumerate(weeks):
                         ws.cell(row=4, column=5 + (w_idx * 3), value=w['title'])
 
+                    # Khởi tạo bộ đếm an toàn
+                    weekly_stats = {w_idx: {k: {'tkb': 0, 'thuc_day': 0} for k in danh_sach_khoi} for w_idx in range(len(weeks))}
+
                     for thu in danh_sach_thu:
                         thu_idx = danh_sach_thu.index(thu)
                         tkb_thu = tkb_gv[tkb_gv['Thứ'] == thu]
 
                         for tiet in range(1, 9): 
-                            # TÍNH TOÁN DÒNG CHUẨN XÁC:
-                            # Base của các ngày: 7, 17, 27, 37, 47, 57 (Cách nhau 10 dòng)
-                            # Bỏ qua 1 dòng nghỉ giữa buổi nếu từ tiết 5 trở đi
                             base_row_ngay = 7 + (thu_idx * 10)
                             offset_tiet = (tiet - 1) if tiet <= 4 else tiet
                             row_idx = base_row_ngay + offset_tiet
@@ -377,6 +385,10 @@ else:
                                     
                                     target_cell = ws.cell(row=row_idx, column=col_idx)
                                     
+                                    khoi_goc = get_khoi(base_class)
+                                    if base_class and khoi_goc in weekly_stats[w_idx]:
+                                        weekly_stats[w_idx][khoi_goc]['tkb'] += 1
+
                                     if not nl_v_match.empty:
                                         target_cell.value = f"V ({base_class})"
                                         target_cell.font = font_v
@@ -384,13 +396,29 @@ else:
                                         lop_dt = nl_dt_match.iloc[0]['Lớp']
                                         target_cell.value = f"{lop_dt} (DT)" 
                                         target_cell.font = font_dt
+                                        khoi_dt = get_khoi(lop_dt)
+                                        if khoi_dt in weekly_stats[w_idx]:
+                                            weekly_stats[w_idx][khoi_dt]['thuc_day'] += 1
                                     else:
                                         target_cell.value = base_class
+                                        if base_class and khoi_goc in weekly_stats[w_idx]:
+                                            weekly_stats[w_idx][khoi_goc]['thuc_day'] += 1
                                 else:
                                     ws.cell(row=row_idx, column=col_idx, value="-")
 
-                wb.remove(wb[template_ws_name])
+                    # Ghi dữ liệu cột Ghi chú (Sử dụng .get để tránh KeyError)
+                    for w_idx in range(len(weeks)):
+                        gc_base_row = 6 + (w_idx * 9) 
+                        for k_idx, khoi in enumerate(danh_sach_khoi):
+                            # Lấy dữ liệu an toàn, nếu không có khối đó thì mặc định 0
+                            stats_khoi = weekly_stats.get(w_idx, {}).get(khoi, {'tkb': 0, 'thuc_day': 0})
+                            
+                            if stats_khoi['tkb'] > 0: 
+                                ws.cell(row=gc_base_row + 1 + k_idx, column=10, value=stats_khoi['tkb'])
+                            if stats_khoi['thuc_day'] > 0: 
+                                ws.cell(row=gc_base_row + 1 + k_idx, column=11, value=stats_khoi['thuc_day'])
 
+                wb.remove(wb[template_ws_name])
                 output = io.BytesIO()
                 wb.save(output)
                 return output.getvalue()
