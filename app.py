@@ -443,9 +443,10 @@ else:
                 today_date = datetime.now().date()
 
                 for gv_id, gv_name in gv_dict.items():
-                    tkb_gv = df_tkb_all[df_tkb_all['Mã định danh'].astype(str) == gv_id]
-                    nl_gv_v = df_nl_all[df_nl_all['ID GV vắng'].astype(str) == gv_id]
-                    nl_gv_dt = df_nl_all[df_nl_all['ID GV dạy thay'].astype(str) == gv_id]
+                    # FIX 1: Thêm .str.strip() để ép xóa khoảng trắng dư thừa trong ID, đảm bảo dò tìm chính xác 100%
+                    tkb_gv = df_tkb_all[df_tkb_all['Mã định danh'].astype(str).str.strip() == gv_id.strip()]
+                    nl_gv_v = df_nl_all[df_nl_all['ID GV vắng'].astype(str).str.strip() == gv_id.strip()]
+                    nl_gv_dt = df_nl_all[df_nl_all['ID GV dạy thay'].astype(str).str.strip() == gv_id.strip()]
 
                     if tkb_gv.empty and nl_gv_v.empty and nl_gv_dt.empty: continue 
 
@@ -514,14 +515,15 @@ else:
                                         
                                         new_font = copy(target_cell.font)
                                         new_font.bold = True
+                                        
                                         new_align = copy(target_cell.alignment)
                                         new_align.wrap_text = False
                                         new_align.shrink_to_fit = False
                                         
                                         if not nl_v_match.empty:
-                                            # Fix: Lấy Tên lớp trực tiếp từ Ngoại lệ thay vì TKB
+                                            # Điều chỉnh định dạng in Vắng thành V(TênLớp)
                                             lop_v = nl_v_match.iloc[0]['Lớp']
-                                            target_cell.value = f"{lop_v} (V)"
+                                            target_cell.value = f"V({lop_v})"
                                             new_font.color = "FF0000"
                                             target_cell.font = new_font
                                             target_cell.alignment = new_align
