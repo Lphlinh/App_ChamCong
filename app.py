@@ -131,8 +131,6 @@ def load_flat_tkb(thang, tuan):
             if len(data) > 1: return pd.DataFrame(data[1:], columns=data[0])
         except:
             continue # Thử tuần trước đó
-            
-    # Nếu lùi đến tận W1 mà vẫn rỗng -> Trả về dataframe chuẩn, KHÔNG load ma trận
     return pd.DataFrame(columns=["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"])
 
 def get_month_calendar(year, month):
@@ -147,7 +145,64 @@ def get_month_calendar(year, month):
     return weeks
 
 # ==========================================
-# 3. MÀN HÌNH ĐĂNG NHẬP
+# 3. HÀM DÙNG CHUNG: FORM THÊM GIÁO VIÊN
+# ==========================================
+def form_them_giao_vien(form_key_prefix):
+    st.subheader("Thêm Giáo viên mới vào hệ thống (Cập nhật Tab DS_GV)")
+    with st.form(f"form_them_gv_{form_key_prefix}"):
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            ma_gv = st.text_input("Mã định danh (Cột A) *", help="Ví dụ: GV099").strip()
+            ten_gv = st.text_input("Họ tên Giáo viên (Cột B) *").strip()
+            email_gv = st.text_input("Email (Cột D)").strip()
+        with col_g2:
+            to_cm = st.text_input("Tổ chuyên môn (Cột C)").strip()
+            ma_tkb = st.text_input("Mã TKB (Cột E)", help="Ký hiệu trên TKB. VD: T.Anh, C.Lan").strip()
+
+        submit_btn = st.form_submit_button("💾 Lưu Giáo viên", type="primary")
+
+        if submit_btn:
+            if not ma_gv or not ten_gv:
+                st.error("⚠️ Vui lòng nhập đầy đủ Mã định danh và Họ tên Giáo viên.")
+            elif ma_gv in ds_gv['Mã định danh'].astype(str).values:
+                st.error("❌ Lỗi nghiêm trọng: Mã định danh này đã tồn tại! Hệ thống yêu cầu mỗi mã định danh là duy nhất.")
+            else:
+                mask_name = ds_gv['Họ tên Giáo viên'].astype(str).str.strip().str.lower() == ten_gv.lower()
+                df_same_name = ds_gv[mask_name]
+                
+                is_duplicate = False
+                loi_trung = ""
+                
+                if not df_same_name.empty:
+                    for _, row in df_same_name.iterrows():
+                        old_to = str(row.get('Tổ chuyên môn', '')).strip().lower()
+                        old_email = str(row.get('Email', '')).strip().lower()
+                        old_matkb = str(row.get('Mã TKB', '')).strip().lower()
+                        
+                        if to_cm and to_cm.lower() == old_to:
+                            is_duplicate, loi_trung = True, "Tổ chuyên môn"
+                            break
+                        if email_gv and email_gv.lower() == old_email:
+                            is_duplicate, loi_trung = True, "Email"
+                            break
+                        if ma_tkb and ma_tkb.lower() == old_matkb:
+                            is_duplicate, loi_trung = True, "Mã TKB"
+                            break
+                
+                if is_duplicate:
+                    st.error(f"❌ Phát hiện trùng lặp: Giáo viên '{ten_gv}' có cùng {loi_trung} với một hồ sơ đã tồn tại!")
+                else:
+                    with st.spinner("Đang lưu vào Google Sheets..."):
+                        try:
+                            new_row = [ma_gv, ten_gv, to_cm, email_gv, ma_tkb]
+                            sheet.worksheet("DS_GV").append_row(new_row)
+                            load_ds_gv.clear()
+                            st.success(f"✅ Đã thêm giáo viên **{ten_gv}** thành công! Hệ thống đã được cập nhật.")
+                        except Exception as e:
+                            st.error(f"❌ Có lỗi xảy ra khi kết nối Google Sheets: {e}")
+
+# ==========================================
+# 4. MÀN HÌNH ĐĂNG NHẬP & PHÂN QUYỀN
 # ==========================================
 if "logged_in" not in st.session_state:
     st.session_state.update({"logged_in": False, "role": None, "user_name": None, "user_id": None})
@@ -192,14 +247,13 @@ else:
         st.markdown(f"🟢 **Hệ thống Online**<br><small>Lần kết nối: {datetime.now().strftime('%H:%M:%S %d/%m')}</small>", unsafe_allow_html=True)
 
     # ==========================================
-    # 4. CHỨC NĂNG GIÁM THỊ
+    # 5. CHỨC NĂNG GIÁM THỊ
     # ==========================================
     if st.session_state.role == "Giám thị":
-        tab_gt1, tab_gt2, tab_gt3 = st.tabs(["📝 Ghi nhận sự cố", "📤 Quản lý & Tải TKB Mới", "🔎 Báo cáo Tuần"])
+        tab_gt1, tab_gt2, tab_gt3, tab_gt4, tab_gt5 = st.tabs(["📝 Ghi nhận biến động", "📤 Quản lý & Tải TKB Mới", "🔎 Báo cáo Tuần", "📊 Chấm công tổng quát", "➕ Thêm Giáo viên"])
         
-        # --- TAB 1: GHI NHẬN SỰ CỐ ---
         with tab_gt1:
-            st.header("Ghi nhận sự cố")
+            st.header("Ghi nhận biến động (Nghỉ/Dạy thay)")
             col_date, _ = st.columns([1, 2])
             with col_date:
                 ngay_chon = st.date_input("🗓️ Chọn ngày ghi nhận:", value=datetime.now().date())
@@ -240,7 +294,8 @@ else:
                         gv_goc_id = str(gv_info.iloc[0]['Mã định danh']) if not gv_info.empty else ""
                         with col2:
                             st.info(f"GV Phụ trách: **{gv_goc_ten}**")
-                            loai = st.selectbox("Loại", ["Nghỉ có phép", "Nghỉ không phép", "Dạy thay", "Đổi tiết", "Nghỉ Sự kiện/Thi"])
+                            # BỔ SUNG "Dạy bù" VÀO DANH SÁCH LỰA CHỌN
+                            loai = st.selectbox("Loại", ["Nghỉ có phép", "Nghỉ không phép", "Dạy thay", "Dạy bù", "Đổi tiết", "Nghỉ Sự kiện/Thi"])
                         
                         gv_ban_list = []
                         for t in tiet_list:
@@ -264,7 +319,6 @@ else:
                             if len(tiet_list) == 0:
                                 st.warning("⚠️ Vui lòng chọn ít nhất 1 tiết học trước khi lưu!")
                             else:
-                                # BỔ SUNG: Kiểm tra trùng lặp báo vắng / dạy thay
                                 trung_lap = False
                                 for t in tiet_list:
                                     if not df_today.empty:
@@ -274,7 +328,7 @@ else:
                                                 st.error(f"⚠️ Tiết {t}: Giáo viên {gv_goc_ten} Đã báo vắng trước đó!")
                                                 trung_lap = True
                                             if gv_thay_id and (gv_thay_id in ca_nay['ID GV dạy thay'].astype(str).values):
-                                                st.error(f"⚠️ Tiết {t}: Giáo viên {gv_thay_ten} Đã báo dạy thay trước đó!")
+                                                st.error(f"⚠️ Tiết {t}: Giáo viên {gv_thay_ten} Đã báo dạy thay/bù trước đó!")
                                                 trung_lap = True
                                 
                                 if not trung_lap:
@@ -295,13 +349,10 @@ else:
                             sheet.worksheet("BaoCao_NgoaiLe").append_rows([[ngay_str, thu_hien_tai, "ALL", lop_nghi, "ALL", "Ngày nghỉ/Sự kiện", "ALL", "", ly_do]])
                             st.success(f"✅ Đã lưu ngày {ngay_str} là Ngày nghỉ!")
 
-        # --- TAB 2: TẢI LÊN TKB MỚI ---
         with tab_gt2:
             st.header("Upload & Quản lý Thời Khóa Biểu")
             st.info("💡 Khi trường có TKB mới, Giám thị tải file Excel lên đây để lưu trữ theo Tuần và Tháng.")
-            
             uploaded_file = st.file_uploader("📂 Tải lên file Thời Khóa Biểu (Excel)", type=['xlsx', 'xls'])
-            
             if uploaded_file:
                 with st.spinner("Đang AI tự động quét và nhận diện ma trận TKB..."):
                     df_raw = pd.read_excel(uploaded_file, header=None)
@@ -335,7 +386,6 @@ else:
                             st.cache_data.clear()
                             st.success(f"🎉 Đã lưu thành công vào tab {tab_name}!")
 
-        # --- TAB 3: BÁO CÁO TUẦN ---
         with tab_gt3:
             st.subheader("Báo cáo Kiểm dò chéo Sổ đầu bài")
             col_d1, col_d2 = st.columns(2)
@@ -384,8 +434,48 @@ else:
 
                         st.dataframe(rp_final, use_container_width=True)
 
+        with tab_gt4:
+            st.subheader("Nhật ký Biến động Tổng quát")
+            with st.spinner("Đang tải dữ liệu..."):
+                df_ngoai_le_gt = pd.DataFrame(sheet.worksheet("BaoCao_NgoaiLe").get_all_records())
+                if df_ngoai_le_gt.empty:
+                    min_date, max_date = datetime.now().date(), datetime.now().date()
+                    df_filtered_gt = pd.DataFrame(columns=['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'ID GV vắng', 'ID GV dạy thay', 'Ghi chú'])
+                else:
+                    df_ngoai_le_gt['Ngày chuẩn'] = pd.to_datetime(df_ngoai_le_gt['Ngày'], format='%d/%m/%Y', errors='coerce')
+                    min_date = df_ngoai_le_gt['Ngày chuẩn'].min().date()
+                    max_date = df_ngoai_le_gt['Ngày chuẩn'].max().date()
+                    date_range_gt = st.date_input("🗓️ Chọn khoảng thời gian xem báo cáo:", value=(min_date, max_date), key="date_range_gt")
+                    
+                    if isinstance(date_range_gt, tuple) and len(date_range_gt) == 2: start_date_gt, end_date_gt = date_range_gt
+                    elif isinstance(date_range_gt, tuple) and len(date_range_gt) == 1: start_date_gt = end_date_gt = date_range_gt[0]
+                    else: start_date_gt = end_date_gt = date_range_gt
+                        
+                    mask_gt = (df_ngoai_le_gt['Ngày chuẩn'].dt.date >= start_date_gt) & (df_ngoai_le_gt['Ngày chuẩn'].dt.date <= end_date_gt)
+                    df_filtered_gt = df_ngoai_le_gt.loc[mask_gt].copy()
+
+                if not df_filtered_gt.empty:
+                    dict_gv_ten = pd.Series(ds_gv['Họ tên Giáo viên'].values, index=ds_gv['Mã định danh'].astype(str).str.strip()).to_dict()
+                    df_filtered_gt['Giáo viên Vắng'] = df_filtered_gt['ID GV vắng'].astype(str).str.strip().map(dict_gv_ten).fillna("Không rõ")
+                    df_filtered_gt['Giáo viên Dạy thay'] = df_filtered_gt['ID GV dạy thay'].astype(str).str.strip().map(dict_gv_ten).fillna("Không có")
+
+                mask_metrics_gt = ~df_filtered_gt['Loại ngoại lệ'].isin(['Ngày nghỉ/Sự kiện', 'Nghỉ Sự kiện/Thi']) if not df_filtered_gt.empty else []
+                df_metrics_gt = df_filtered_gt[mask_metrics_gt] if not df_filtered_gt.empty else pd.DataFrame()
+                tong_su_co_gt = len(df_metrics_gt)
+                so_ca_day_thay_gt = len(df_metrics_gt[df_metrics_gt['ID GV dạy thay'].astype(str).str.strip() != '']) if not df_metrics_gt.empty else 0
+                
+                col1_gt, col2_gt, col3_gt = st.columns(3)
+                col1_gt.metric("Tổng tiết báo vắng", tong_su_co_gt)
+                col2_gt.metric("Số tiết đã Dạy thay", so_ca_day_thay_gt, delta_color="normal")
+                col3_gt.metric("Số tiết Lớp tự học", tong_su_co_gt - so_ca_day_thay_gt, delta_color="inverse")
+                if not df_filtered_gt.empty:
+                    st.dataframe(df_filtered_gt[['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'Giáo viên Vắng', 'Giáo viên Dạy thay', 'Ghi chú']], use_container_width=True)
+
+        with tab_gt5:
+            form_them_giao_vien("giamthi")
+
     # ==========================================
-    # 5. CHỨC NĂNG BGH & XUẤT EXCEL THÔNG MINH
+    # 6. CHỨC NĂNG BGH & XUẤT EXCEL THÔNG MINH
     # ==========================================
     elif st.session_state.role == "BGH":
         st.header("📊 Bảng điều khiển dành cho Ban Giám Hiệu")
@@ -412,8 +502,7 @@ else:
             df_filtered['Giáo viên Vắng'] = df_filtered['ID GV vắng'].astype(str).str.strip().map(dict_gv_ten).fillna("Không rõ")
             df_filtered['Giáo viên Dạy thay'] = df_filtered['ID GV dạy thay'].astype(str).str.strip().map(dict_gv_ten).fillna("Không có")
 
-        # BỔ SUNG: Chuyển thành 3 Tab cho BGH
-        tab1, tab2, tab3 = st.tabs(["📊 Tổng quát Sự cố", "📥 Xuất EXCEL (Chấm Công Lương)", "➕ Thêm Giáo viên"])
+        tab1, tab2, tab3 = st.tabs(["📊 Chấm công tổng quát", "📥 Xuất EXCEL (Chấm Công Lương)", "➕ Thêm Giáo viên"])
         
         with tab1:
             st.subheader("Nhật ký Biến động Tổng quát")
@@ -431,13 +520,10 @@ else:
 
         with tab2:
             st.subheader("Tạo Bảng Chấm Công Lương (Kế Thừa TKB Tự Động)")
-            st.info("💡 Hệ thống tự động quét TKB của từng tuần trong tháng. Nếu tuần sau không có TKB mới, hệ thống tự động kế thừa TKB của tuần trước đó.")
-            
             col_m, col_y = st.columns(2)
             with col_m: thang_xuat = st.selectbox("Xuất Lương Tháng:", range(1, 13), index=datetime.now().month - 1)
             with col_y: nam_xuat = st.selectbox("Năm:", [2024, 2025, 2026, 2027], index=2)
             
-            # TẢI TRƯỚC TKB CỦA CẢ 5 TUẦN TRONG THÁNG
             dict_tkb_thang = {}
             for w in range(1, 6):
                 dict_tkb_thang[w] = load_flat_tkb(thang_xuat, w)
@@ -460,7 +546,6 @@ else:
                     co_day_khong = False
                     tkb_gv_cac_tuan = {}
                     
-                    # Lọc TKB của giáo viên này cho từng tuần
                     for w in range(1, 6):
                         tkb_w = dict_tkb_cac_tuan[w]
                         if not tkb_w.empty:
@@ -512,7 +597,6 @@ else:
                                     else:
                                         ngay_str = f"{day:02d}/{month:02d}/{year}"
                                         
-                                        # Lấy TKB ứng với đúng tuần đó
                                         tkb_tuan_nay = tkb_gv_cac_tuan[w_idx + 1]
                                         base_class = ""
                                         if not tkb_tuan_nay.empty:
@@ -525,9 +609,11 @@ else:
                                                                       ((nl_ngay_nghi['Lớp'] == 'ALL') | (nl_ngay_nghi['Lớp'] == base_class))]
                                             if not match_nghi.empty: is_ngay_nghi = True
                                         
+                                        # BỔ SUNG KIỂM TRA DẠY BÙ & DẠY THAY ĐỘC LẬP
                                         nl_sk_match = nl_gv_v[(nl_gv_v['Ngày'] == ngay_str) & (nl_gv_v['Tiết'].astype(str) == str(tiet)) & (nl_gv_v['Loại ngoại lệ'] == 'Nghỉ Sự kiện/Thi')]
                                         nl_v_match = nl_gv_v[(nl_gv_v['Ngày'] == ngay_str) & (nl_gv_v['Tiết'].astype(str) == str(tiet)) & (nl_gv_v['Loại ngoại lệ'] != 'Nghỉ Sự kiện/Thi')]
-                                        nl_dt_match = nl_gv_dt[(nl_gv_dt['Ngày'] == ngay_str) & (nl_gv_dt['Tiết'].astype(str) == str(tiet))]
+                                        nl_dt_match = nl_gv_dt[(nl_gv_dt['Ngày'] == ngay_str) & (nl_gv_dt['Tiết'].astype(str) == str(tiet)) & (nl_gv_dt['Loại ngoại lệ'] != 'Dạy bù')]
+                                        nl_db_match = nl_gv_dt[(nl_gv_dt['Ngày'] == ngay_str) & (nl_gv_dt['Tiết'].astype(str) == str(tiet)) & (nl_gv_dt['Loại ngoại lệ'] == 'Dạy bù')]
                                         
                                         target_cell = ws.cell(row=row_idx, column=col_idx)
                                         new_font = copy(target_cell.font)
@@ -535,12 +621,16 @@ else:
                                         new_align = copy(target_cell.alignment)
                                         new_align.wrap_text, new_align.shrink_to_fit = False, False
                                         
+                                        # XỬ LÝ CHUỖI IN RA EXCEL THEO YÊU CẦU MỚI
                                         if is_ngay_nghi or not nl_sk_match.empty:
                                             if base_class:
                                                 target_cell.value, new_font.color = f"N({base_class})", "0070C0"
                                                 target_cell.font, target_cell.alignment = new_font, new_align
                                         elif not nl_v_match.empty:
-                                            target_cell.value, new_font.color = f"{nl_v_match.iloc[0]['Lớp']} (V)", "FF0000"
+                                            target_cell.value, new_font.color = f"V ({nl_v_match.iloc[0]['Lớp']})", "FF0000"
+                                            target_cell.font, target_cell.alignment = new_font, new_align
+                                        elif not nl_db_match.empty:
+                                            target_cell.value, new_font.color = f"{nl_db_match.iloc[0]['Lớp']} (bù)", "00B050"
                                             target_cell.font, target_cell.alignment = new_font, new_align
                                         elif not nl_dt_match.empty:
                                             target_cell.value, new_font.color = f"{nl_dt_match.iloc[0]['Lớp']} (DT)", "00B050"
@@ -577,38 +667,11 @@ else:
                         excel_data_all = tao_excel_mau_avm(gv_dict_all, weeks, thang_xuat, nam_xuat, dict_tkb_thang, df_nl_full)
                         if excel_data_all: st.download_button("✅ Tải File", data=excel_data_all, file_name=f"ChamCong_ToanTruong_T{thang_xuat}.xlsx")
 
-        # BỔ SUNG: TAB 3 (THÊM GIÁO VIÊN MỚI)
         with tab3:
-            st.subheader("Thêm Giáo viên mới vào hệ thống (Cập nhật Tab DS_GV)")
-            with st.form("form_them_gv"):
-                col_g1, col_g2 = st.columns(2)
-                with col_g1:
-                    ma_gv = st.text_input("Mã định danh (Cột A) *", help="Ví dụ: GV099")
-                    ten_gv = st.text_input("Họ tên Giáo viên (Cột B) *")
-                    email_gv = st.text_input("Email (Cột D)")
-                with col_g2:
-                    to_cm = st.text_input("Tổ chuyên môn (Cột C)")
-                    ma_tkb = st.text_input("Mã TKB (Cột E)", help="Ký hiệu trên TKB. VD: T.Anh, C.Lan")
-
-                submit_btn = st.form_submit_button("💾 Lưu Giáo viên", type="primary")
-
-                if submit_btn:
-                    if not ma_gv.strip() or not ten_gv.strip():
-                        st.error("⚠️ Vui lòng nhập đầy đủ Mã định danh và Họ tên Giáo viên.")
-                    elif ma_gv.strip() in ds_gv['Mã định danh'].values:
-                        st.error("❌ Mã định danh này đã tồn tại trong hệ thống! Vui lòng chọn mã khác.")
-                    else:
-                        with st.spinner("Đang lưu vào Google Sheets..."):
-                            try:
-                                new_row = [ma_gv.strip(), ten_gv.strip(), to_cm.strip(), email_gv.strip(), ma_tkb.strip()]
-                                sheet.worksheet("DS_GV").append_row(new_row)
-                                load_ds_gv.clear()
-                                st.success(f"✅ Đã thêm giáo viên **{ten_gv.strip()}** thành công! Hệ thống đã được cập nhật.")
-                            except Exception as e:
-                                st.error(f"❌ Có lỗi xảy ra: {e}")
+            form_them_giao_vien("bgh")
 
     # ==========================================
-    # 6. CHỨC NĂNG GIÁO VIÊN
+    # 7. CHỨC NĂNG GIÁO VIÊN
     # ==========================================
     elif st.session_state.role == "Giáo viên":
         st.header(f"🔍 Hồ sơ đối soát của Thầy/Cô: {st.session_state.user_name}")
@@ -620,7 +683,9 @@ else:
                 if not df_vang.empty: 
                     df_vang['Vai trò'] = df_vang['Loại ngoại lệ'].apply(lambda x: "Sự kiện/Thi (Không trừ)" if x == "Nghỉ Sự kiện/Thi" else "Vắng mặt (-)")
                 df_thay = df_ngoai_le[df_ngoai_le['ID GV dạy thay'].astype(str).str.strip() == gv_id_str].copy()
-                if not df_thay.empty: df_thay['Vai trò'] = "Dạy thay (+)"
+                # CẬP NHẬT HIỂN THỊ DẠY BÙ BÊN TAB GIÁO VIÊN
+                if not df_thay.empty: 
+                    df_thay['Vai trò'] = df_thay['Loại ngoại lệ'].apply(lambda x: "Dạy bù (+)" if x == "Dạy bù" else "Dạy thay (+)")
                 
                 df_ketqua = pd.concat([df_vang, df_thay])
                 if not df_ketqua.empty:
