@@ -250,7 +250,14 @@ else:
     # 5. CHỨC NĂNG GIÁM THỊ
     # ==========================================
     if st.session_state.role == "Giám thị":
-        tab_gt1, tab_gt2, tab_gt3, tab_gt4, tab_gt5 = st.tabs(["📝 Ghi nhận biến động", "📤 Quản lý & Tải TKB Mới", "🔎 Báo cáo Tuần", "📊 Chấm công tổng quát", "➕ Thêm Giáo viên"])
+        tab_gt1, tab_gt2, tab_gt3, tab_gt6, tab_gt4, tab_gt5 = st.tabs([
+            "📝 Ghi nhận biến động", 
+            "📤 Quản lý & Tải TKB Mới", 
+            "🔎 Báo cáo Tuần", 
+            "📋 Tổng hợp Công Tháng",
+            "📊 Chấm công tổng quát", 
+            "➕ Thêm Giáo viên"
+        ])
         
         with tab_gt1:
             st.header("Ghi nhận biến động (Nghỉ/Dạy thay)")
@@ -294,7 +301,6 @@ else:
                         gv_goc_id = str(gv_info.iloc[0]['Mã định danh']) if not gv_info.empty else ""
                         with col2:
                             st.info(f"GV Phụ trách: **{gv_goc_ten}**")
-                            # BỔ SUNG "Dạy bù" VÀO DANH SÁCH LỰA CHỌN
                             loai = st.selectbox("Loại", ["Nghỉ có phép", "Nghỉ không phép", "Dạy thay", "Dạy bù", "Đổi tiết", "Nghỉ Sự kiện/Thi"])
                         
                         gv_ban_list = []
@@ -433,6 +439,104 @@ else:
                         for col in ['Tổng TKB phải dạy', 'Số tiết Nghỉ (Vắng)', 'Số tiết Dạy thay', 'Tổng Thực Dạy']: rp_final[col] = rp_final[col].astype(int)
 
                         st.dataframe(rp_final, use_container_width=True)
+
+        with tab_gt6:
+            st.subheader("📋 Bảng Tổng hợp Ngày Giờ Công Tháng")
+            col_m, col_y = st.columns(2)
+            with col_m: thang_bc = st.selectbox("Chọn Tháng Báo Cáo:", range(1, 13), index=datetime.now().month - 1)
+            with col_y: nam_bc = st.selectbox("Chọn Năm Báo Cáo:", [2024, 2025, 2026, 2027], index=2)
+            
+            if st.button("Tạo Bảng Tổng Hợp Tháng", type="primary"):
+                with st.spinner(f"Đang quét thông minh TKB từng tuần trong tháng {thang_bc}/{nam_bc} để đối chiếu..."):
+                    df_nl_all = pd.DataFrame(sheet.worksheet("BaoCao_NgoaiLe").get_all_records())
+                    if not df_nl_all.empty:
+                        df_nl_all['Ngày chuẩn'] = pd.to_datetime(df_nl_all['Ngày'], format='%d/%m/%Y', errors='coerce')
+                        mask_m = (df_nl_all['Ngày chuẩn'].dt.month == thang_bc) & (df_nl_all['Ngày chuẩn'].dt.year == nam_bc)
+                        df_nl_thang = df_nl_all.loc[mask_m].copy()
+                    else:
+                        df_nl_thang = pd.DataFrame(columns=['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'ID GV vắng', 'ID GV dạy thay', 'Ghi chú'])
+
+                    dict_tkb = {}
+                    weeks = get_month_calendar(nam_bc, thang_bc)
+                    danh_sach_thu = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"]
+                    
+                    nl_ngay_nghi = df_nl_thang[df_nl_thang['Loại ngoại lệ'] == 'Ngày nghỉ/Sự kiện']
+                    
+                    for w_idx, w in enumerate(weeks):
+                        if w_idx >= 5: break
+                        tkb_w = load_flat_tkb(thang_bc, w_idx + 1)
+                        if tkb_w.empty: continue
+                        
+                        for thu_idx, thu in enumerate(danh_sach_thu):
+                            day = w['days'][thu_idx]
+                            if day != 0:
+                                ngay_str = f"{day:02d}/{thang_bc:02d}/{nam_bc}"
+                                is_holiday = False
+                                if not nl_ngay_nghi.empty:
+                                    match_nghi = nl_ngay_nghi[(nl_ngay_nghi['Ngày'] == ngay_str) & (nl_ngay_nghi['Lớp'] == 'ALL')]
+                                    if not match_nghi.empty: is_holiday = True
+                                
+                                if not is_holiday:
+                                    tkb_thu = tkb_w[tkb_w['Thứ'] == thu]
+                                    for _, row_tkb in tkb_thu.iterrows():
+                                        gv_id = str(row_tkb['Mã định danh']).strip()
+                                        if gv_id: dict_tkb[gv_id] = dict_tkb.get(gv_id, 0) + 1
+                    
+                    dict_vang, dict_thay, dict_bu = {}, {}, {}
+                    
+                    if not df_nl_thang.empty:
+                        nl_v = df_nl_thang[(df_nl_thang['ID GV vắng'].astype(str).str.strip() != '') & (df_nl_thang['Loại ngoại lệ'] != 'Nghỉ Sự kiện/Thi')]
+                        for gv_id in nl_v['ID GV vắng'].astype(str).str.strip(): dict_vang[gv_id] = dict_vang.get(gv_id, 0) + 1
+                        
+                        nl_dt = df_nl_thang[(df_nl_thang['ID GV dạy thay'].astype(str).str.strip() != '') & (df_nl_thang['Loại ngoại lệ'] != 'Dạy bù')]
+                        for gv_id in nl_dt['ID GV dạy thay'].astype(str).str.strip(): dict_thay[gv_id] = dict_thay.get(gv_id, 0) + 1
+                        
+                        nl_db = df_nl_thang[(df_nl_thang['ID GV dạy thay'].astype(str).str.strip() != '') & (df_nl_thang['Loại ngoại lệ'] == 'Dạy bù')]
+                        for gv_id in nl_db['ID GV dạy thay'].astype(str).str.strip(): dict_bu[gv_id] = dict_bu.get(gv_id, 0) + 1
+
+                    data_bc = []
+                    for _, row_gv in ds_gv.iterrows():
+                        gv_id = str(row_gv['Mã định danh']).strip()
+                        gv_ten = str(row_gv['Họ tên Giáo viên']).strip()
+                        
+                        tkb_count = dict_tkb.get(gv_id, 0)
+                        vang_count = dict_vang.get(gv_id, 0)
+                        thay_count = dict_thay.get(gv_id, 0)
+                        bu_count = dict_bu.get(gv_id, 0)
+                        
+                        if tkb_count > 0 or vang_count > 0 or thay_count > 0 or bu_count > 0:
+                            thuc_day = tkb_count - vang_count + thay_count + bu_count
+                            data_bc.append({
+                                "Mã định danh": gv_id,
+                                "Họ tên Giáo viên": gv_ten,
+                                "Tổng tiết phân công": tkb_count,
+                                "Số tiết nghỉ": vang_count,
+                                "Số tiết dạy thay": thay_count,
+                                "Số tiết dạy bù": bu_count,
+                                "Số tiết thực dạy": thuc_day,
+                                "Ghi chú": ""
+                            })
+                    
+                    df_bc = pd.DataFrame(data_bc)
+                    if not df_bc.empty:
+                        tong_cong = df_bc[['Tổng tiết phân công', 'Số tiết nghỉ', 'Số tiết dạy thay', 'Số tiết dạy bù', 'Số tiết thực dạy']].sum()
+                        df_bc.loc['TỔNG TOÀN TRƯỜNG'] = tong_cong
+                        df_bc.at['TỔNG TOÀN TRƯỜNG', 'Họ tên Giáo viên'] = "TỔNG TOÀN TRƯỜNG"
+                        df_bc.at['TỔNG TOÀN TRƯỜNG', 'Mã định danh'] = ""
+                        df_bc.at['TỔNG TOÀN TRƯỜNG', 'Ghi chú'] = ""
+                        
+                        for col in ['Tổng tiết phân công', 'Số tiết nghỉ', 'Số tiết dạy thay', 'Số tiết dạy bù', 'Số tiết thực dạy']:
+                            df_bc[col] = df_bc[col].astype(int)
+                        
+                        df_bc = df_bc.reset_index(drop=True)
+                        st.dataframe(df_bc, use_container_width=True)
+                        
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            df_bc.to_excel(writer, index=False, sheet_name=f"Thang {thang_bc}")
+                        st.download_button("📥 Tải Bảng Tổng Hợp (Excel)", data=output.getvalue(), file_name=f"TongHopCong_T{thang_bc}_{nam_bc}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                    else:
+                        st.info(f"📭 Không có dữ liệu TKB hay biến động nào trong tháng {thang_bc}/{nam_bc}.")
 
         with tab_gt4:
             st.subheader("Nhật ký Biến động Tổng quát")
@@ -609,7 +713,6 @@ else:
                                                                       ((nl_ngay_nghi['Lớp'] == 'ALL') | (nl_ngay_nghi['Lớp'] == base_class))]
                                             if not match_nghi.empty: is_ngay_nghi = True
                                         
-                                        # BỔ SUNG KIỂM TRA DẠY BÙ & DẠY THAY ĐỘC LẬP
                                         nl_sk_match = nl_gv_v[(nl_gv_v['Ngày'] == ngay_str) & (nl_gv_v['Tiết'].astype(str) == str(tiet)) & (nl_gv_v['Loại ngoại lệ'] == 'Nghỉ Sự kiện/Thi')]
                                         nl_v_match = nl_gv_v[(nl_gv_v['Ngày'] == ngay_str) & (nl_gv_v['Tiết'].astype(str) == str(tiet)) & (nl_gv_v['Loại ngoại lệ'] != 'Nghỉ Sự kiện/Thi')]
                                         nl_dt_match = nl_gv_dt[(nl_gv_dt['Ngày'] == ngay_str) & (nl_gv_dt['Tiết'].astype(str) == str(tiet)) & (nl_gv_dt['Loại ngoại lệ'] != 'Dạy bù')]
@@ -621,7 +724,6 @@ else:
                                         new_align = copy(target_cell.alignment)
                                         new_align.wrap_text, new_align.shrink_to_fit = False, False
                                         
-                                        # XỬ LÝ CHUỖI IN RA EXCEL THEO YÊU CẦU MỚI
                                         if is_ngay_nghi or not nl_sk_match.empty:
                                             if base_class:
                                                 target_cell.value, new_font.color = f"N({base_class})", "0070C0"
@@ -683,7 +785,6 @@ else:
                 if not df_vang.empty: 
                     df_vang['Vai trò'] = df_vang['Loại ngoại lệ'].apply(lambda x: "Sự kiện/Thi (Không trừ)" if x == "Nghỉ Sự kiện/Thi" else "Vắng mặt (-)")
                 df_thay = df_ngoai_le[df_ngoai_le['ID GV dạy thay'].astype(str).str.strip() == gv_id_str].copy()
-                # CẬP NHẬT HIỂN THỊ DẠY BÙ BÊN TAB GIÁO VIÊN
                 if not df_thay.empty: 
                     df_thay['Vai trò'] = df_thay['Loại ngoại lệ'].apply(lambda x: "Dạy bù (+)" if x == "Dạy bù" else "Dạy thay (+)")
                 
