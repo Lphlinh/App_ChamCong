@@ -126,14 +126,154 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
 
 @st.cache_data(ttl=300)
 def load_flat_tkb(thang, tuan):
-    for t in range(tuan, 0, -1):
-        tab_name = f"TKB_{thang}_W{t}"
+    """
+    Fallback dữ liệu TKB cũ dạng TKB_{thang}_W{tuan}.
+    Luồng vận hành chính hiện nay dùng sheet TKB_PhanCong.
+    """
+    columns_default = ["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"]
+
+    def doc_tkb(tab_name):
         try:
             data = sheet.worksheet(tab_name).get_all_values()
-            if len(data) > 1: return pd.DataFrame(data[1:], columns=data[0])
-        except:
-            continue
+            if len(data) > 1:
+                return chuan_hoa_df_tkb_phang(pd.DataFrame(data[1:], columns=data[0]))
+        except Exception:
+            return None
+        return None
+
+    for t in range(int(tuan), 0, -1):
+        df = doc_tkb(f"TKB_{int(thang)}_W{t}")
+        if df is not None:
+            return df
+
+    thang_hien_tai = int(thang)
+    for offset in range(1, 13):
+        thang_truoc = ((thang_hien_tai - offset - 1) % 12) + 1
+        for t in range(5, 0, -1):
+            df = doc_tkb(f"TKB_{thang_truoc}_W{t}")
+            if df is not None:
+                return df
+
+    return pd.DataFrame(columns=columns_default)
+
+
+def chuan_hoa_df_tkb_phang(df):
+    """Chuẩn hóa DataFrame TKB phẳng về đúng 6 cột hệ thống cần."""
+    columns_default = ["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns_default)
+
+    df2 = df.copy()
+    for col in columns_default:
+        if col not in df2.columns:
+            df2[col] = ""
+    df2 = df2[columns_default]
+    for col in columns_default:
+        df2[col] = df2[col].astype(str).fillna("").str.strip()
+    df2["Mã định danh"] = df2["Mã định danh"].str.replace(r"\.0$", "", regex=True).str.strip()
+    df2["Tiết"] = df2["Tiết"].str.replace(r"\.0$", "", regex=True).str.strip()
+    return df2
+
+
+def parse_date_ddmmyyyy(value):
+    """Đọc ngày dạng dd/mm/yyyy, yyyy-mm-dd hoặc date/datetime."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except Exception:
+            pass
+    return None
+
+
+TKB_PHANCONG_SHEET = "TKB_PhanCong"
+
+
+def ensure_tkb_phancong_sheet():
+    """Tạo/chuẩn hóa sheet TKB_PhanCong nếu chưa có."""
+    headers = ["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"]
+    try:
+        ws = sheet.worksheet(TKB_PHANCONG_SHEET)
+    except Exception:
+        ws = sheet.add_worksheet(title=TKB_PHANCONG_SHEET, rows="1000", cols="20")
+        ws.update("A1", [headers])
+        return ws
+
+    try:
+        row_1 = ws.row_values(1)
+        if not row_1:
+            ws.update("A1", [headers])
+    except Exception:
+        pass
+    return ws
+
+
+@st.cache_data(ttl=300)
+def load_tkb_phancong():
+    """Đọc TKB hiện hành từ sheet TKB_PhanCong."""
+    try:
+        data = sheet.worksheet(TKB_PHANCONG_SHEET).get_all_values()
+        if len(data) > 1:
+            return chuan_hoa_df_tkb_phang(pd.DataFrame(data[1:], columns=data[0]))
+    except Exception:
+        pass
     return pd.DataFrame(columns=["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"])
+
+
+def save_tkb_to_phancong(df_pc):
+    """Ghi đè TKB đã quét vào sheet TKB_PhanCong."""
+    df_up = chuan_hoa_df_tkb_phang(df_pc).astype(str).fillna("")
+    ws = ensure_tkb_phancong_sheet()
+    ws.clear()
+    data = [df_up.columns.tolist()] + df_up.values.tolist()
+    ws.update("A1", data)
+    st.cache_data.clear()
+    return len(df_up)
+
+
+@st.cache_data(ttl=300)
+def load_flat_tkb_by_date(target_date):
+    """
+    Lấy TKB đang dùng.
+    Quy tắc vận hành hiện nay: TKB_PhanCong là nguồn chính thức hiện hành.
+    target_date được giữ trong tham số để tương thích với các luồng cũ.
+    Nếu TKB_PhanCong trống/chưa có, fallback về TKB_{thang}_W{tuan} cũ.
+    """
+    df_current = load_tkb_phancong()
+    if not df_current.empty:
+        return df_current
+
+    target = parse_date_ddmmyyyy(target_date)
+    if target is None:
+        return pd.DataFrame(columns=["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"])
+
+    tuan_legacy = (target.day - 1) // 7 + 1
+    return load_flat_tkb(target.month, tuan_legacy)
+
+
+def build_tkb_by_date_cache(month, year):
+    """
+    Tạo cache TKB theo từng ngày trong tháng.
+    Với chuẩn hiện hành, toàn bộ tháng dùng dữ liệu TKB_PhanCong hiện tại.
+    Vẫn giữ dạng dict theo ngày để không phải sửa hàm xuất Excel/chấm công.
+    """
+    last_day = calendar.monthrange(int(year), int(month))[1]
+    df_current = load_tkb_phancong()
+    cache = {}
+    for day in range(1, last_day + 1):
+        d = date(int(year), int(month), day)
+        if not df_current.empty:
+            cache[d.strftime("%d/%m/%Y")] = df_current
+        else:
+            cache[d.strftime("%d/%m/%Y")] = load_flat_tkb_by_date(d)
+    return cache
+
 
 def get_month_calendar(year, month):
     cal = calendar.monthcalendar(year, month)
@@ -154,6 +294,56 @@ def extract_grade_safe(class_name):
         return m.group()
     else:
         return "Khác"
+
+def normalize_dataframe_for_streamlit(df):
+    """Chuẩn hóa kiểu dữ liệu trước khi đưa vào st.dataframe để tránh lỗi PyArrow.
+    Đặc biệt cột 'Tiết' có thể chứa cả số tiết và giá trị chữ như 'ALL'.
+    """
+    if df is None:
+        return df
+    df_view = df.copy()
+    for col in df_view.columns:
+        if col in ['Tiết', 'Mã định danh', 'ID GV vắng', 'ID GV dạy thay', 'ID_Hang']:
+            df_view[col] = df_view[col].astype(str)
+    return df_view
+
+
+def parse_ngay_nghi_viec(value):
+    """Chuyển chuỗi ngày nghỉ việc dd/mm/yyyy thành date; rỗng hoặc sai định dạng thì xem như chưa nghỉ."""
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%d/%m/%Y").date()
+    except Exception:
+        return None
+
+
+def tao_dict_ngay_nghi_viec(ds_gv_source):
+    """Tạo dict: Mã định danh -> ngày nghỉ việc."""
+    if ds_gv_source is None or ds_gv_source.empty or 'Ngày nghỉ việc' not in ds_gv_source.columns:
+        return {}
+    result = {}
+    for _, row in ds_gv_source.iterrows():
+        gv_id = str(row.get('Mã định danh', '')).strip()
+        if gv_id:
+            result[gv_id] = parse_ngay_nghi_viec(row.get('Ngày nghỉ việc', ''))
+    return result
+
+
+def gv_con_hieu_luc_trong_thang(ngay_nghi_viec, month, year):
+    """GV còn được đưa vào xử lý tháng nếu chưa nghỉ hoặc ngày nghỉ việc sau ngày đầu tháng."""
+    if ngay_nghi_viec is None:
+        return True
+    first_day = date(year, month, 1)
+    return ngay_nghi_viec > first_day
+
+
+def gv_duoc_tinh_o_ngay(ngay_nghi_viec, ngay_iter):
+    """Chỉ tính tiết trước ngày nghỉ việc; từ ngày nghỉ việc trở đi không ghi nhận."""
+    if ngay_nghi_viec is None:
+        return True
+    return ngay_iter < ngay_nghi_viec
 
 # ==========================================
 # 3. HÀM DÙNG CHUNG: FORM THÊM GIÁO VIÊN
@@ -216,7 +406,7 @@ def form_them_giao_vien(form_key_prefix):
 # ==========================================
 # 4. HÀM TẠO EXCEL MẪU (CÓ TÙY CHỌN KHÓA SHEET)
 # ==========================================
-def tao_excel_mau_avm(gv_dict, weeks, month, year, dict_tkb_cac_tuan, df_nl_all, is_teacher=False):
+def tao_excel_mau_avm(gv_dict, weeks, month, year, dict_tkb_cac_tuan, df_nl_all, is_teacher=False, gv_nghi_viec_dict=None):
     try:
         wb = openpyxl.load_workbook("BaoCaoMau.xlsx")
     except FileNotFoundError:
@@ -227,20 +417,28 @@ def tao_excel_mau_avm(gv_dict, weeks, month, year, dict_tkb_cac_tuan, df_nl_all,
     danh_sach_thu = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"]
     today_date = datetime.now().date()
     nl_ngay_nghi = df_nl_all[df_nl_all['Loại ngoại lệ'] == 'Ngày nghỉ/Sự kiện'] if not df_nl_all.empty else pd.DataFrame()
+    gv_nghi_viec_dict = gv_nghi_viec_dict or {}
 
     for gv_id, gv_name in gv_dict.items():
+        gv_id = str(gv_id).strip()
+        ngay_nghi_viec = gv_nghi_viec_dict.get(gv_id)
+        if not gv_con_hieu_luc_trong_thang(ngay_nghi_viec, month, year):
+            continue
+
         co_day_khong = False
         tkb_gv_cac_tuan = {}
-        
-        for w in range(1, 6):
-            tkb_w = dict_tkb_cac_tuan.get(w, pd.DataFrame())
-            if not tkb_w.empty:
+
+        # dict_tkb_cac_tuan có thể là:
+        # - Chuẩn cũ: {1: df_tkb_w1, 2: df_tkb_w2, ...}
+        # - Chuẩn mới: {"dd/mm/yyyy": df_tkb_hieu_luc_cua_ngay, ...}
+        for key_tkb, tkb_w in (dict_tkb_cac_tuan or {}).items():
+            if tkb_w is not None and not tkb_w.empty:
                 tkb_gv_w = tkb_w[tkb_w['Mã định danh'].astype(str).str.strip() == gv_id.strip()]
-                tkb_gv_cac_tuan[w] = tkb_gv_w
-                if not tkb_gv_w.empty: 
+                tkb_gv_cac_tuan[key_tkb] = tkb_gv_w
+                if not tkb_gv_w.empty:
                     co_day_khong = True
             else:
-                tkb_gv_cac_tuan[w] = pd.DataFrame()
+                tkb_gv_cac_tuan[key_tkb] = pd.DataFrame()
 
         nl_gv_v = df_nl_all[df_nl_all['ID GV vắng'].astype(str).str.strip() == gv_id.strip()] if not df_nl_all.empty else pd.DataFrame()
         nl_gv_dt = df_nl_all[df_nl_all['ID GV dạy thay'].astype(str).str.strip() == gv_id.strip()] if not df_nl_all.empty else pd.DataFrame()
@@ -253,6 +451,9 @@ def tao_excel_mau_avm(gv_dict, weeks, month, year, dict_tkb_cac_tuan, df_nl_all,
         ws['J4'] = gv_name
         ws['S4'] = month
         ws['L71'] = gv_name
+        ws['Y72'] = gv_id
+        ws.column_dimensions['Y'].hidden = True
+        ws.row_dimensions[72].hidden = True
 
         last_day_of_month = calendar.monthrange(year, month)[1]
         for w_idx, w in enumerate(weeks):
@@ -291,12 +492,20 @@ def tao_excel_mau_avm(gv_dict, weeks, month, year, dict_tkb_cac_tuan, df_nl_all,
                         ngay_iter = date(year, month, day)
                         ngay_str = f"{day:02d}/{month:02d}/{year}"
                         
+                        if not gv_duoc_tinh_o_ngay(ngay_nghi_viec, ngay_iter):
+                            continue
+
                         if ngay_iter <= today_date:
-                            tkb_tuan_nay = tkb_gv_cac_tuan.get(w_idx + 1, pd.DataFrame())
+                            tkb_key_ngay = ngay_str
+                            tkb_tuan_nay = tkb_gv_cac_tuan.get(tkb_key_ngay, pd.DataFrame())
+                            if tkb_tuan_nay.empty:
+                                # Fallback cho dữ liệu cũ theo tuần.
+                                tkb_tuan_nay = tkb_gv_cac_tuan.get(w_idx + 1, pd.DataFrame())
+
                             base_class = ""
                             if not tkb_tuan_nay.empty:
                                 tkb_match = tkb_tuan_nay[(tkb_tuan_nay['Thứ'] == thu) & (tkb_tuan_nay['Tiết'] == str(tiet))]
-                                if not tkb_match.empty: 
+                                if not tkb_match.empty:
                                     base_class = tkb_match.iloc[0]['Lớp']
                             
                             is_ngay_nghi = False
@@ -346,6 +555,224 @@ def tao_excel_mau_avm(gv_dict, weeks, month, year, dict_tkb_cac_tuan, df_nl_all,
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
+
+
+# ==========================================
+# 4B. HÀM XUẤT BẢNG LƯƠNG THÁNG TỪ FILE CHẤM CÔNG
+# ==========================================
+# CẤU HÌNH FILE LƯƠNG CHUẨN
+# Template cố định: cột SL THPT đầu tiên là D, mỗi cụm GV rộng 6 cột.
+# ID GV nằm tại dòng 50, cột liền trước cột SL THPT.
+LUONG_FIRST_SL_THPT_COL = 4   # D
+LUONG_GROUP_WIDTH = 6
+LUONG_ID_ROW = 50
+LUONG_ROWS_TO_WRITE = [12, 13, 14, 15]
+
+def chuan_hoa_ten_gv_avm(value):
+    """Chuẩn hóa họ tên để khớp giữa file chấm công và file lương."""
+    if value is None:
+        return ""
+    return " ".join(str(value).strip().split()).lower()
+
+
+def lay_gia_tri_o_an_toan(value):
+    """Chuyển giá trị trong ô Excel thành chuỗi an toàn để nhận diện lớp."""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def chuan_hoa_id_gv_avm(value):
+    """Chuẩn hóa ID GV đọc từ Google Sheets hoặc Excel lương.
+    Excel đôi khi trả ID dạng số hoặc chuỗi có .0 ở cuối.
+    """
+    if value is None:
+        return ""
+    text = str(value).replace("\u00a0", " ").strip()
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text.strip()
+
+
+def dem_tiet_theo_khoi_tu_sheet_cham_cong(ws):
+    """
+    Đọc số tiết thực dạy theo khối từ sheet chấm công tháng.
+    Dòng tổng trong mẫu là cố định ở dòng 67, nhưng openpyxl không tự tính công thức.
+    Vì vậy hàm đếm trực tiếp vùng dữ liệu C7:T65, tương đương logic công thức dòng 67.
+    """
+    ket_qua = {
+        "L6": 0,
+        "L7": 0,
+        "L8": 0,
+        "L9": 0,
+        "L10_11": 0,
+        "L12": 0,
+    }
+
+    for row in range(7, 66):
+        for col in range(3, 21):
+            raw = lay_gia_tri_o_an_toan(ws.cell(row=row, column=col).value)
+            if not raw:
+                continue
+
+            # Bỏ qua các mã không phải lớp thực dạy: V(...), N(...), ô trống hoặc ghi chú khác.
+            raw_upper = raw.upper()
+            if raw_upper.startswith("V") or raw_upper.startswith("N"):
+                continue
+
+            if raw.startswith("6"):
+                ket_qua["L6"] += 1
+            elif raw.startswith("7"):
+                ket_qua["L7"] += 1
+            elif raw.startswith("8"):
+                ket_qua["L8"] += 1
+            elif raw.startswith("9"):
+                ket_qua["L9"] += 1
+            elif raw.startswith("10") or raw.startswith("11"):
+                ket_qua["L10_11"] += 1
+            elif raw.startswith("12"):
+                ket_qua["L12"] += 1
+
+    return ket_qua
+
+
+def tao_dict_tiet_luong_tu_excel_cham_cong(excel_cham_cong_bytes):
+    """Tạo dict: Mã định danh GV -> số tiết theo 4 dòng cần ghi vào bảng lương."""
+    wb_cc = openpyxl.load_workbook(io.BytesIO(excel_cham_cong_bytes), data_only=False)
+    dict_tiet = {}
+    ten_gv_goc = {}
+
+    for ws in wb_cc.worksheets:
+        if ws.title == "KhongCoDuLieu":
+            continue
+
+        gv_id = chuan_hoa_id_gv_avm(ws["Y72"].value)
+        gv_name = ws["J4"].value if ws["J4"].value else ws.title
+
+        # Fallback an toàn cho file chấm công cũ chưa có ô kỹ thuật Y72.
+        # Phần lương chuẩn vẫn khớp bằng ID dòng 50 của file lương.
+        if not gv_id:
+            gv_id = chuan_hoa_id_gv_avm(ws.title)
+
+        if not gv_id:
+            continue
+
+        theo_khoi = dem_tiet_theo_khoi_tu_sheet_cham_cong(ws)
+        dict_tiet[gv_id] = {
+            12: theo_khoi["L6"] + theo_khoi["L7"] + theo_khoi["L8"],
+            13: theo_khoi["L9"],
+            14: theo_khoi["L10_11"],
+            15: theo_khoi["L12"],
+        }
+        ten_gv_goc[gv_id] = " ".join(str(gv_name).strip().split())
+
+    return dict_tiet, ten_gv_goc
+
+
+def tim_cac_cum_gv_trong_sheet_luong(ws):
+    """
+    Tìm các cụm GV trong sheet lương bằng địa chỉ cột cố định, không dò theo text header.
+
+    Chuẩn file TH_luong.xlsx:
+    - Cột SL THPT đầu tiên: D
+    - Mỗi cụm GV rộng 6 cột
+    - ID GV: dòng 50, cột liền trước SL THPT
+    - Ghi số tiết: dòng 12, 13, 14, 15 tại cột SL THPT
+    """
+    ds_cum = []
+    for col_sl in range(LUONG_FIRST_SL_THPT_COL, ws.max_column + 1, LUONG_GROUP_WIDTH):
+        start_col = col_sl - 1
+        gv_name = ws.cell(row=3, column=start_col).value
+        gv_id = chuan_hoa_id_gv_avm(ws.cell(row=LUONG_ID_ROW, column=start_col).value)
+
+        # Vẫn đưa cụm vào danh sách để cảnh báo rõ cụm nào thiếu ID,
+        # nhưng không dùng tên/header để quyết định cột ghi.
+        ds_cum.append({
+            "ten_gv": " ".join(str(gv_name or "").strip().split()),
+            "gv_id": gv_id,
+            "cot_bat_dau": start_col,
+            "cot_sl_thpt": col_sl,
+        })
+    return ds_cum
+
+
+def tao_bang_luong_thang_avm(month, year, dict_tkb_cac_tuan, df_nl_all, ds_gv_source):
+    """
+    Tạo file TH_luong.xlsx đã điền số tiết thực dạy vào cột SL THPT.
+    Chỉ ghi vào hai sheet: B. GV- NVCH và D. GV TT .
+    """
+    template_luong_path = "TH_luong.xlsx"
+    try:
+        wb_luong = openpyxl.load_workbook(template_luong_path)
+    except FileNotFoundError:
+        return None, [f"Không tìm thấy file mẫu {template_luong_path} trong thư mục app."], []
+
+    weeks = get_month_calendar(year, month)
+    gv_nghi_viec_dict = tao_dict_ngay_nghi_viec(ds_gv_source)
+    gv_dict_all = {
+        str(row["Mã định danh"]).strip(): str(row["Họ tên Giáo viên"]).strip()
+        for _, row in ds_gv_source.iterrows()
+        if str(row.get("Mã định danh", "")).strip()
+        and str(row.get("Họ tên Giáo viên", "")).strip()
+        and gv_con_hieu_luc_trong_thang(gv_nghi_viec_dict.get(str(row.get("Mã định danh", "")).strip()), month, year)
+    }
+
+    excel_cham_cong = tao_excel_mau_avm(
+        gv_dict_all,
+        weeks,
+        month,
+        year,
+        dict_tkb_cac_tuan,
+        df_nl_all,
+        is_teacher=False,
+        gv_nghi_viec_dict=gv_nghi_viec_dict
+    )
+
+    if not excel_cham_cong:
+        return None, ["Không tạo được file chấm công tháng để làm nguồn điền bảng lương."], []
+
+    dict_tiet, ten_gv_cham_cong = tao_dict_tiet_luong_tu_excel_cham_cong(excel_cham_cong)
+    sheets_luong_can_dien = ["B. GV- NVCH", "D. GV TT "]
+    da_dien = set()
+    khong_khop_trong_luong = []
+
+    for sheet_name in sheets_luong_can_dien:
+        if sheet_name not in wb_luong.sheetnames:
+            khong_khop_trong_luong.append(f"Thiếu sheet lương: {sheet_name}")
+            continue
+
+        ws_luong = wb_luong[sheet_name]
+        ds_cum = tim_cac_cum_gv_trong_sheet_luong(ws_luong)
+
+        for cum in ds_cum:
+            gv_id = cum["gv_id"]
+            ten_hien_thi = cum["ten_gv"] or f"Cột {cum['cot_bat_dau']}"
+            if not gv_id:
+                khong_khop_trong_luong.append(f"{sheet_name}: {ten_hien_thi} - thiếu ID dòng 50")
+                continue
+            if gv_id not in dict_tiet:
+                khong_khop_trong_luong.append(f"{sheet_name}: {ten_hien_thi} - ID {gv_id} chưa có dữ liệu chấm công")
+                continue
+
+            col_sl = cum["cot_sl_thpt"]
+            for row_idx in LUONG_ROWS_TO_WRITE:
+                ws_luong.cell(row=row_idx, column=col_sl).value = dict_tiet[gv_id].get(row_idx, 0)
+            da_dien.add(gv_id)
+
+    khong_co_trong_file_luong = []
+    for key, ten in ten_gv_cham_cong.items():
+        if key not in da_dien:
+            khong_co_trong_file_luong.append(ten)
+
+    try:
+        wb_luong.calculation.fullCalcOnLoad = True
+        wb_luong.calculation.forceFullCalc = True
+    except Exception:
+        pass
+
+    output = io.BytesIO()
+    wb_luong.save(output)
+    return output.getvalue(), khong_khop_trong_luong, khong_co_trong_file_luong
 
 # ==========================================
 # 5. MÀN HÌNH ĐĂNG NHẬP & PHÂN QUYỀN
@@ -418,15 +845,15 @@ else:
             if ngay_chon.weekday() == 6:
                 st.error("🔒 HỆ THỐNG ĐÃ KHÓA SỔ. Hôm nay là Chủ Nhật, không thể cập nhật dữ liệu.")
             else:
-                with st.spinner(f"Đang tải TKB Tháng {ngay_chon.month} Tuần {tuan_hien_tai}..."):
+                with st.spinner(f"Đang tải TKB_PhanCong cho ngày {ngay_str}..."):
                     df_ngoai_le = pd.DataFrame(sheet.worksheet("BaoCao_NgoaiLe").get_all_records())
                     df_today = df_ngoai_le[df_ngoai_le['Ngày'] == ngay_str] if not df_ngoai_le.empty else pd.DataFrame()
                     
-                    tkb_phang = load_flat_tkb(ngay_chon.month, tuan_hien_tai)
+                    tkb_phang = load_flat_tkb_by_date(ngay_chon)
                     tkb_today = tkb_phang[tkb_phang['Thứ'] == thu_hien_tai] if not tkb_phang.empty else pd.DataFrame()
 
                 if tkb_today.empty:
-                    st.warning(f"⚠️ Chưa có dữ liệu TKB cho Tháng {ngay_chon.month} Tuần {tuan_hien_tai} (hoặc tuần trước đó). Hãy tải TKB lên ở tab bên cạnh.")
+                    st.warning(f"⚠️ Chưa có dữ liệu TKB_PhanCong cho ngày {ngay_str}. Hãy tải TKB lên ở tab bên cạnh.")
                 else:
                     st.markdown("---")
                     col1, col2, col3 = st.columns(3)
@@ -532,29 +959,18 @@ else:
                             for l in log: 
                                 st.write(l)
                     
-                    st.dataframe(df_pc, use_container_width=True, height=250)
+                    st.dataframe(normalize_dataframe_for_streamlit(df_pc), width='stretch', height=250)
                     
-                    st.markdown("### Lưu trữ dữ liệu")
-                    col_t, col_w = st.columns(2)
-                    with col_t: 
-                        thang_luu = st.selectbox("Lưu TKB cho Tháng:", range(1, 13), index=datetime.now().month-1)
-                    with col_w: 
-                        tuan_luu = st.selectbox("Lưu TKB cho Tuần số:", [1, 2, 3, 4, 5], index=0)
-                    
-                    if st.button(f"💾 Chốt lưu vào Database (TKB_{thang_luu}_W{tuan_luu})", type="primary"):
-                        with st.spinner("Đang đẩy dữ liệu lên Google Sheets..."):
-                            tab_name = f"TKB_{thang_luu}_W{tuan_luu}"
-                            try: 
-                                ws_target = sheet.worksheet(tab_name)
-                            except: 
-                                ws_target = sheet.add_worksheet(title=tab_name, rows="500", cols="20")
-                            
-                            ws_target.clear()
-                            df_up = df_pc.astype(str).fillna("")
-                            data = [df_up.columns.tolist()] + df_up.values.tolist()
-                            ws_target.update('A1', data)
-                            st.cache_data.clear()
-                            st.success(f"🎉 Đã lưu thành công vào tab {tab_name}!")
+                    st.markdown("### Lưu vào TKB_PhanCong")
+                    st.caption("Khi lưu, app sẽ ghi đè toàn bộ sheet TKB_PhanCong. Sau đó có thể sửa trực tiếp trong sheet này; các lần xuất chấm công/lương sẽ đọc TKB_PhanCong hiện hành.")
+
+                    if st.button("💾 Ghi đè vào TKB_PhanCong", type="primary"):
+                        with st.spinner("Đang cập nhật sheet TKB_PhanCong..."):
+                            try:
+                                so_dong = save_tkb_to_phancong(df_pc)
+                                st.success(f"🎉 Đã cập nhật TKB_PhanCong với {so_dong} dòng phân công hợp lệ.")
+                            except Exception as e:
+                                st.error(f"❌ Không cập nhật được TKB_PhanCong: {e}")
 
         with tab_gt3:
             st.subheader("Báo cáo Kiểm dò chéo Sổ đầu bài")
@@ -566,13 +982,25 @@ else:
             
             if st.button("Tạo Báo cáo Tuần", type="primary"):
                 with st.spinner("Đang tính toán số liệu tuần..."):
-                    t_rp = (start_rp.day - 1) // 7 + 1
-                    tkb_tuan = load_flat_tkb(start_rp.month, t_rp)
-                    
-                    if tkb_tuan.empty:
-                        st.error(f"❌ Không có dữ liệu TKB.")
+                    tkb_rows = []
+                    cur_day = start_rp
+                    danh_sach_thu = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
+                    while cur_day <= end_rp:
+                        if cur_day.weekday() < 6:
+                            thu_cur = danh_sach_thu[cur_day.weekday()]
+                            tkb_ngay = load_flat_tkb_by_date(cur_day)
+                            if not tkb_ngay.empty:
+                                tkb_thu = tkb_ngay[tkb_ngay['Thứ'] == thu_cur].copy()
+                                if not tkb_thu.empty:
+                                    tkb_thu['Ngày'] = cur_day.strftime("%d/%m/%Y")
+                                    tkb_rows.append(tkb_thu)
+                        cur_day += timedelta(days=1)
+
+                    if not tkb_rows:
+                        st.error("❌ Không có dữ liệu TKB_PhanCong trong khoảng báo cáo.")
                     else:
                         df_ngoai_le = pd.DataFrame(sheet.worksheet("BaoCao_NgoaiLe").get_all_records())
+                        tkb_tuan = pd.concat(tkb_rows, ignore_index=True)
                         tkb_tuan['Khối'] = "Lớp " + tkb_tuan['Lớp'].apply(extract_grade_safe)
                         rp_tkb = tkb_tuan.groupby('Khối').size().reset_index(name='Tổng TKB phải dạy')
                         
@@ -609,7 +1037,7 @@ else:
                         for col in ['Tổng TKB phải dạy', 'Số tiết Nghỉ (Vắng)', 'Số tiết Dạy thay', 'Tổng Thực Dạy']: 
                             rp_final[col] = pd.to_numeric(rp_final[col], errors='coerce').fillna(0).astype(int)
 
-                        st.dataframe(rp_final, use_container_width=True)
+                        st.dataframe(normalize_dataframe_for_streamlit(rp_final), width='stretch')
 
         with tab_gt6:
             st.subheader("📋 Bảng Tổng hợp Ngày Giờ Công Tháng")
@@ -627,7 +1055,7 @@ else:
                         try:
                             d_resign = datetime.strptime(str(row['Ngày nghỉ việc']).strip(), "%d/%m/%Y").date()
                             first_day_of_report = date(y, m, 1)
-                            return d_resign >= first_day_of_report
+                            return d_resign > first_day_of_report
                         except: return True
                     
                     ds_gv_active = ds_gv[ds_gv.apply(lambda r: check_active_in_month(r, thang_bc, nam_bc), axis=1)]
@@ -641,30 +1069,38 @@ else:
                         df_nl_thang = pd.DataFrame(columns=['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'ID GV vắng', 'ID GV dạy thay', 'Ghi chú'])
 
                     dict_tkb = {}
-                    weeks = get_month_calendar(nam_bc, thang_bc)
-                    danh_sach_thu = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"]
-                    
+                    danh_sach_thu_day_du = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
                     nl_ngay_nghi = df_nl_thang[df_nl_thang['Loại ngoại lệ'] == 'Ngày nghỉ/Sự kiện']
-                    
-                    for w_idx, w in enumerate(weeks):
-                        if w_idx >= 5: break
-                        tkb_w = load_flat_tkb(thang_bc, w_idx + 1)
-                        if tkb_w.empty: continue
-                        
-                        for thu_idx, thu in enumerate(danh_sach_thu):
-                            day = w['days'][thu_idx]
-                            if day != 0:
-                                ngay_str = f"{day:02d}/{thang_bc:02d}/{nam_bc}"
-                                is_holiday = False
-                                if not nl_ngay_nghi.empty:
-                                    match_nghi = nl_ngay_nghi[(nl_ngay_nghi['Ngày'] == ngay_str) & (nl_ngay_nghi['Lớp'] == 'ALL')]
-                                    if not match_nghi.empty: is_holiday = True
-                                
-                                if not is_holiday:
-                                    tkb_thu = tkb_w[tkb_w['Thứ'] == thu]
-                                    for _, row_tkb in tkb_thu.iterrows():
-                                        gv_id = str(row_tkb['Mã định danh']).strip()
-                                        if gv_id: dict_tkb[gv_id] = dict_tkb.get(gv_id, 0) + 1
+                    gv_nghi_viec_map_month = tao_dict_ngay_nghi_viec(ds_gv)
+
+                    last_day_bc = calendar.monthrange(nam_bc, thang_bc)[1]
+                    for day in range(1, last_day_bc + 1):
+                        ngay_iter = date(nam_bc, thang_bc, day)
+                        if ngay_iter.weekday() >= 6:
+                            continue
+                        thu = danh_sach_thu_day_du[ngay_iter.weekday()]
+                        ngay_str = f"{day:02d}/{thang_bc:02d}/{nam_bc}"
+
+                        is_holiday = False
+                        if not nl_ngay_nghi.empty:
+                            match_nghi = nl_ngay_nghi[(nl_ngay_nghi['Ngày'] == ngay_str) & (nl_ngay_nghi['Lớp'] == 'ALL')]
+                            if not match_nghi.empty:
+                                is_holiday = True
+
+                        if is_holiday:
+                            continue
+
+                        tkb_ngay = load_flat_tkb_by_date(ngay_iter)
+                        if tkb_ngay.empty:
+                            continue
+                        tkb_thu = tkb_ngay[tkb_ngay['Thứ'] == thu]
+                        for _, row_tkb in tkb_thu.iterrows():
+                            gv_id = str(row_tkb['Mã định danh']).strip()
+                            if not gv_id:
+                                continue
+                            if not gv_duoc_tinh_o_ngay(gv_nghi_viec_map_month.get(gv_id), ngay_iter):
+                                continue
+                            dict_tkb[gv_id] = dict_tkb.get(gv_id, 0) + 1
                     
                     dict_vang, dict_thay, dict_bu = {}, {}, {}
                     
@@ -714,7 +1150,7 @@ else:
                             df_bc[col] = pd.to_numeric(df_bc[col], errors='coerce').fillna(0).astype(int)
                         
                         df_bc = df_bc.reset_index(drop=True)
-                        st.dataframe(df_bc, use_container_width=True)
+                        st.dataframe(normalize_dataframe_for_streamlit(df_bc), width='stretch')
                         
                         output = io.BytesIO()
                         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -722,6 +1158,48 @@ else:
                         st.download_button("📥 Tải Bảng Tổng Hợp (Excel)", data=output.getvalue(), file_name=f"TongHopCong_T{thang_bc}_{nam_bc}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                     else:
                         st.info(f"📭 Không có dữ liệu TKB hay biến động nào trong tháng {thang_bc}/{nam_bc}.")
+
+
+            st.markdown("---")
+            st.subheader("📥 Xuất Bảng Lương Tháng")
+            st.caption("Tự động lấy số tiết thực dạy từ bảng chấm công tháng và điền vào cột SL THPT trong file TH_luong.xlsx.")
+            if st.button("📥 Tải Bảng Lương Tháng", type="primary"):
+                with st.spinner(f"Đang tạo bảng lương tháng {thang_bc}/{nam_bc}..."):
+                    dict_tkb_luong = build_tkb_by_date_cache(thang_bc, nam_bc)
+                    try:
+                        df_nl_luong = pd.DataFrame(sheet.worksheet("BaoCao_NgoaiLe").get_all_records())
+                    except Exception:
+                        df_nl_luong = pd.DataFrame(columns=['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'ID GV vắng', 'ID GV dạy thay', 'Ghi chú'])
+
+                    excel_luong, ds_khong_khop_luong, ds_cham_cong_chua_co_luong = tao_bang_luong_thang_avm(
+                        thang_bc,
+                        nam_bc,
+                        dict_tkb_luong,
+                        df_nl_luong,
+                        ds_gv
+                    )
+
+                    if excel_luong:
+                        st.download_button(
+                            "✅ Tải Bảng Lương Tháng",
+                            data=excel_luong,
+                            file_name=f"BangLuong_GV_T{thang_bc}_{nam_bc}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+
+                        if ds_khong_khop_luong:
+                            with st.expander("⚠️ Giáo viên trong file lương chưa khớp dữ liệu chấm công"):
+                                for item in ds_khong_khop_luong:
+                                    st.write(f"- {item}")
+
+                        if ds_cham_cong_chua_co_luong:
+                            with st.expander("⚠️ Giáo viên có chấm công nhưng chưa tìm thấy trong file lương"):
+                                for item in ds_cham_cong_chua_co_luong:
+                                    st.write(f"- {item}")
+                    else:
+                        st.error("❌ Không tạo được bảng lương tháng.")
+                        for item in ds_khong_khop_luong:
+                            st.warning(item)
 
         with tab_gt4:
             # --- CẬP NHẬT TOÀN BỘ TAB GT4: BỔ SUNG CHỨC NĂNG SỬA BIẾN ĐỘNG [cite: 17, 27, 30, 31, 32, 50, 53] ---
@@ -762,7 +1240,7 @@ else:
                 col3_gt.metric("Số tiết Lớp tự học", tong_su_co_gt - so_ca_day_thay_gt)
                 
                 if not df_filtered_gt.empty:
-                    st.dataframe(df_filtered_gt[['ID_Hang', 'Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'Giáo viên Vắng', 'Giáo viên Dạy thay', 'Ghi chú']], use_container_width=True)
+                    st.dataframe(normalize_dataframe_for_streamlit(df_filtered_gt[['ID_Hang', 'Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'Giáo viên Vắng', 'Giáo viên Dạy thay', 'Ghi chú']]), width='stretch')
 
             st.markdown("---")
             col_edit, col_del = st.columns(2)
@@ -857,7 +1335,7 @@ else:
             col3.metric("Số tiết Lớp tự học", tong_su_co - so_ca_day_thay, delta_color="inverse")
             
             if not df_filtered.empty:
-                st.dataframe(df_filtered[['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'Giáo viên Vắng', 'Giáo viên Dạy thay', 'Ghi chú']], use_container_width=True)
+                st.dataframe(normalize_dataframe_for_streamlit(df_filtered[['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'Giáo viên Vắng', 'Giáo viên Dạy thay', 'Ghi chú']]), width='stretch')
 
         with tab2:
             st.subheader("Tạo Bảng Chấm Công Lương (Kế Thừa TKB Tự Động)")
@@ -867,9 +1345,7 @@ else:
             with col_y: 
                 nam_xuat = st.selectbox("Năm:", [2024, 2025, 2026, 2027], index=2)
             
-            dict_tkb_thang = {}
-            for w in range(1, 6):
-                dict_tkb_thang[w] = load_flat_tkb(thang_xuat, w)
+            dict_tkb_thang = build_tkb_by_date_cache(thang_xuat, nam_xuat)
             
             weeks = get_month_calendar(nam_xuat, thang_xuat)
             ds_gv['HienThi_BGH'] = ds_gv['Họ tên Giáo viên'] + " - ID: " + ds_gv['Mã định danh'].astype(str)
@@ -878,6 +1354,7 @@ else:
             st.markdown("---")
             col_ex1, col_ex2 = st.columns(2)
             df_nl_full = df_ngoai_le.copy() if not df_ngoai_le.empty else pd.DataFrame(columns=['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Loại ngoại lệ', 'ID GV vắng', 'ID GV dạy thay', 'Ghi chú'])
+            gv_nghi_viec_map_export = tao_dict_ngay_nghi_viec(ds_gv)
             
             with col_ex1:
                 if gv_chon != "-- Chọn Giáo viên --":
@@ -885,15 +1362,15 @@ else:
                         with st.spinner("Đang tạo Excel..."):
                             gv_id_str = gv_chon.split(" - ID: ")[-1].strip()
                             gv_name_str = gv_chon.split(" - ID: ")[0].strip()
-                            excel_data = tao_excel_mau_avm({gv_id_str: gv_name_str}, weeks, thang_xuat, nam_xuat, dict_tkb_thang, df_nl_full, is_teacher=False)
+                            excel_data = tao_excel_mau_avm({gv_id_str: gv_name_str}, weeks, thang_xuat, nam_xuat, dict_tkb_thang, df_nl_full, is_teacher=False, gv_nghi_viec_dict=gv_nghi_viec_map_export)
                             if excel_data: 
                                 st.download_button("✅ Tải File", data=excel_data, file_name=f"ChamCong_{gv_name_str}_T{thang_xuat}.xlsx")
             
             with col_ex2:
                 if st.button("📥 Tải Excel TOÀN TRƯỜNG", type="primary"):
                     with st.spinner("Đang tổng hợp..."):
-                        gv_dict_all = {str(row['Mã định danh']): row['Họ tên Giáo viên'] for _, row in ds_gv.iterrows()}
-                        excel_data_all = tao_excel_mau_avm(gv_dict_all, weeks, thang_xuat, nam_xuat, dict_tkb_thang, df_nl_full, is_teacher=False)
+                        gv_dict_all = {str(row['Mã định danh']): row['Họ tên Giáo viên'] for _, row in ds_gv.iterrows() if gv_con_hieu_luc_trong_thang(gv_nghi_viec_map_export.get(str(row['Mã định danh']).strip()), thang_xuat, nam_xuat)}
+                        excel_data_all = tao_excel_mau_avm(gv_dict_all, weeks, thang_xuat, nam_xuat, dict_tkb_thang, df_nl_full, is_teacher=False, gv_nghi_viec_dict=gv_nghi_viec_map_export)
                         if excel_data_all: 
                             st.download_button("✅ Tải File", data=excel_data_all, file_name=f"ChamCong_ToanTruong_T{thang_xuat}.xlsx")
 
@@ -915,10 +1392,11 @@ else:
             
             if st.button(f"📥 Tải Excel Chấm Công Tháng {t_bc}", type="primary"):
                 with st.spinner("Đang tạo file Excel bảo mật..."):
-                    dict_tkb_bc = {w: load_flat_tkb(t_bc, w) for w in range(1, 6)}
+                    dict_tkb_bc = build_tkb_by_date_cache(t_bc, n_bc)
                     df_nl_full = pd.DataFrame(sheet.worksheet("BaoCao_NgoaiLe").get_all_records())
+                    gv_nghi_viec_map_export = tao_dict_ngay_nghi_viec(ds_gv)
                     excel_data = tao_excel_mau_avm({st.session_state.user_id: st.session_state.user_name}, 
-                                                   get_month_calendar(n_bc, t_bc), t_bc, n_bc, dict_tkb_bc, df_nl_full, is_teacher=True)
+                                                   get_month_calendar(n_bc, t_bc), t_bc, n_bc, dict_tkb_bc, df_nl_full, is_teacher=True, gv_nghi_viec_dict=gv_nghi_viec_map_export)
                     if excel_data:
                         st.download_button(label="✅ Nhấn để lưu file Excel", data=excel_data, 
                                            file_name=f"DoiSoat_{st.session_state.user_id}_T{t_bc}.xlsx", 
@@ -940,7 +1418,7 @@ else:
                 
                 df_ketqua = pd.concat([df_vang, df_thay])
                 if not df_ketqua.empty:
-                    st.dataframe(df_ketqua[['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Vai trò', 'Loại ngoại lệ']], use_container_width=True)
+                    st.dataframe(normalize_dataframe_for_streamlit(df_ketqua[['Ngày', 'Thứ', 'Tiết', 'Lớp', 'Môn', 'Vai trò', 'Loại ngoại lệ']]), width='stretch')
                 else: 
                     st.success("🎉 Tuyệt vời! Thầy/Cô đảm bảo 100% công giảng dạy.")
             else: 
