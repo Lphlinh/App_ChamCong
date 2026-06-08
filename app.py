@@ -52,78 +52,252 @@ def load_ds_gv():
 ds_gv = load_ds_gv()
 
 def scan_matrix_from_dataframe(df_tkb, ds_gv):
+    import difflib
+
     unmatched_log = []
     pc_data = []
-    
+
+    def tach_mon_va_gv(cell_text):
+        text = str(cell_text or "").strip()
+
+        if not text:
+            return None, None, "EMPTY"
+
+        if text.lower() == "nan":
+            return None, None, "EMPTY"
+
+        if "-" in text:
+            parts = text.split("-")
+        elif "_" in text:
+            parts = text.split("_")
+        else:
+            return None, None, "NO_SEPARATOR"
+
+        mon = parts[0].strip()
+        gv_raw = parts[-1].strip()
+
+        return mon, gv_raw, ""
+
+    def tach_ten_gv_tu_ma(gv_raw):
+        raw = str(gv_raw or "").strip()
+
+        prefixes = [
+            "t.",
+            "c.",
+            "mr.",
+            "mrs.",
+            "thầy ",
+            "cô "
+        ]
+
+        gv_short = raw
+        matched = False
+
+        for p in prefixes:
+            if gv_short.lower().startswith(p):
+                gv_short = gv_short[len(p):].strip()
+                matched = True
+                break
+
+        if not matched:
+            return "", False
+
+        # T.Quốc Anh -> Anh
+        if " " in gv_short:
+            gv_short = gv_short.split()[-1].strip()
+
+        return gv_short, True
+
+    def goi_y_loi_chinh_ta(gv_short, ds_gv_source):
+        candidates = []
+
+        if "Mã TKB" in ds_gv_source.columns:
+            for value in ds_gv_source["Mã TKB"].astype(str):
+                for code in str(value).split(","):
+                    code = code.strip()
+                    if code:
+                        candidates.append(code)
+
+        if "Họ tên Giáo viên" in ds_gv_source.columns:
+            for ten in ds_gv_source["Họ tên Giáo viên"].astype(str):
+                ten = ten.strip()
+                if ten:
+                    candidates.append(ten)
+                    candidates.append(ten.split()[-1])
+
+        candidates = list(set(candidates))
+
+        matches = difflib.get_close_matches(
+            str(gv_short),
+            candidates,
+            n=3,
+            cutoff=0.72
+        )
+
+        if matches:
+            return " | Gợi ý: " + ", ".join(matches)
+
+        return ""
+
     header_idx = -1
+
     for i in range(min(15, df_tkb.shape[0])):
-        row_str = " ".join([str(x).lower() for x in df_tkb.iloc[i].values])
+        row_str = " ".join(
+            [str(x).lower() for x in df_tkb.iloc[i].values]
+        )
+
         if "thứ" in row_str and "tiết" in row_str:
             header_idx = i
             break
-            
-    if header_idx == -1: header_idx = 6
+
+    if header_idx == -1:
+        header_idx = 6
 
     classes_info = []
+
     for col_idx in range(2, df_tkb.shape[1]):
         val = str(df_tkb.iloc[header_idx, col_idx]).strip()
-        if val and val.lower() not in ["thứ", "tiết", "buổi", "sáng", "chiều"]:
+
+        if val and val.lower() not in [
+            "thứ",
+            "tiết",
+            "buổi",
+            "sáng",
+            "chiều"
+        ]:
             classes_info.append((col_idx, val))
 
-    current_thu, current_tiet = "Thứ Hai", ""
-    
-    for row_idx in range(header_idx + 1, df_tkb.shape[0]): 
-        val_thu = str(df_thu_row := df_tkb.iloc[row_idx, 0]).strip()
+    current_thu = "Thứ Hai"
+    current_tiet = ""
+
+    for row_idx in range(header_idx + 1, df_tkb.shape[0]):
+
+        val_thu = str(df_tkb.iloc[row_idx, 0]).strip()
+
         if val_thu:
             val_thu_lower = val_thu.lower()
-            if "2" in val_thu_lower or "hai" in val_thu_lower: current_thu = "Thứ Hai"
-            elif "3" in val_thu_lower or "ba" in val_thu_lower: current_thu = "Thứ Ba"
-            elif "4" in val_thu_lower or "tư" in val_thu_lower: current_thu = "Thứ Tư"
-            elif "5" in val_thu_lower or "năm" in val_thu_lower: current_thu = "Thứ Năm"
-            elif "6" in val_thu_lower or "sáu" in val_thu_lower: current_thu = "Thứ Sáu"
-            elif "7" in val_thu_lower or "bảy" in val_thu_lower: current_thu = "Thứ Bảy"
-        
-        val_tiet = str(df_tkb.iloc[row_idx, 1]).replace('.0', '').strip()
-        if val_tiet: current_tiet = val_tiet
 
-        for col_idx, class_name in classes_info: 
-            cell = str(df_tkb.iloc[row_idx, col_idx]).strip()
-            if cell: 
-                if "-" in cell:
-                    try:
-                        parts = cell.split("-")
-                        mon = parts[0].strip()
-                        gv_raw = parts[-1].strip()
-                        prefixes = ["t.", "c.", "mr.", "mrs.", "thầy ", "cô "]
-                        gv_short = gv_raw
-                        for p in prefixes:
-                            if gv_short.lower().startswith(p):
-                                gv_short = gv_short[len(p):].strip()
-                                break
-                        
-                        match = pd.DataFrame()
-                        if 'Mã TKB' in ds_gv.columns:
-                            mask = ds_gv['Mã TKB'].astype(str).apply(
-                                lambda x: gv_short.lower() in [code.strip().lower() for code in x.split(',')]
-                            )
-                            match = ds_gv[mask]
-                        if match.empty and 'Họ tên Giáo viên' in ds_gv.columns:
-                            match = ds_gv[ds_gv['Họ tên Giáo viên'].str.contains(gv_short, case=False, na=False, regex=False)]
-                       
-                        if not match.empty:
-                            pc_data.append({
-                                "Lớp": class_name, "Môn học": mon,
-                                "Họ tên GV": match.iloc[0]['Họ tên Giáo viên'],
-                                "Mã định danh": str(match.iloc[0]['Mã định danh']),
-                                "Thứ": current_thu, "Tiết": current_tiet
-                            })
-                        else: unmatched_log.append(f"👻 Bỏ qua: {current_thu} T.{current_tiet} [{class_name}] - '{cell}' (Không có GV '{gv_short}')")
-                    except Exception as e: unmatched_log.append(f"❌ Lỗi: {current_thu} T.{current_tiet} [{class_name}] - '{cell}'")
-                else: unmatched_log.append(f"👻 Bỏ qua: {current_thu} T.{current_tiet} [{class_name}] - '{cell}' (Thiếu gạch nối)")
-    
-    df_pc = pd.DataFrame(pc_data).drop_duplicates() if pc_data else pd.DataFrame(columns=["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"])
+            if "2" in val_thu_lower or "hai" in val_thu_lower:
+                current_thu = "Thứ Hai"
+
+            elif "3" in val_thu_lower or "ba" in val_thu_lower:
+                current_thu = "Thứ Ba"
+
+            elif "4" in val_thu_lower or "tư" in val_thu_lower:
+                current_thu = "Thứ Tư"
+
+            elif "5" in val_thu_lower or "năm" in val_thu_lower:
+                current_thu = "Thứ Năm"
+
+            elif "6" in val_thu_lower or "sáu" in val_thu_lower:
+                current_thu = "Thứ Sáu"
+
+            elif "7" in val_thu_lower or "bảy" in val_thu_lower:
+                current_thu = "Thứ Bảy"
+
+        val_tiet = str(
+            df_tkb.iloc[row_idx, 1]
+        ).replace(".0", "").strip()
+
+        if val_tiet:
+            current_tiet = val_tiet
+
+        for col_idx, class_name in classes_info:
+
+            cell = str(
+                df_tkb.iloc[row_idx, col_idx]
+            ).strip()
+
+            try:
+                mon, gv_raw, status = tach_mon_va_gv(cell)
+
+                # Ô trống / nan
+                if status == "EMPTY":
+                    continue
+
+                # SHDC, CLB, hoạt động...
+                if status == "NO_SEPARATOR":
+                    continue
+
+                gv_short, has_teacher_prefix = tach_ten_gv_tu_ma(gv_raw)
+
+                # Không có T./C./Mr./Mrs.
+                if not has_teacher_prefix:
+                    continue
+
+                match = pd.DataFrame()
+
+                if "Mã TKB" in ds_gv.columns:
+
+                    mask = ds_gv["Mã TKB"].astype(str).apply(
+                        lambda x: gv_short.lower() in [
+                            code.strip().lower()
+                            for code in str(x).split(",")
+                            if code.strip()
+                        ]
+                    )
+
+                    match = ds_gv[mask]
+
+                if match.empty and "Họ tên Giáo viên" in ds_gv.columns:
+
+                    match = ds_gv[
+                        ds_gv["Họ tên Giáo viên"]
+                        .astype(str)
+                        .str.contains(
+                            gv_short,
+                            case=False,
+                            na=False,
+                            regex=False
+                        )
+                    ]
+
+                if not match.empty:
+
+                    pc_data.append({
+                        "Lớp": class_name,
+                        "Môn học": mon,
+                        "Họ tên GV": match.iloc[0]["Họ tên Giáo viên"],
+                        "Mã định danh": str(match.iloc[0]["Mã định danh"]),
+                        "Thứ": current_thu,
+                        "Tiết": current_tiet
+                    })
+
+                else:
+
+                    goi_y = goi_y_loi_chinh_ta(
+                        gv_short,
+                        ds_gv
+                    )
+
+                    unmatched_log.append(
+                        f"👻 Bỏ qua: {current_thu} T.{current_tiet} "
+                        f"[{class_name}] - '{cell}' "
+                        f"(Không có GV '{gv_short}' trong DS_GV{goi_y})"
+                    )
+
+            except Exception as e:
+
+                unmatched_log.append(
+                    f"❌ Lỗi: {current_thu} T.{current_tiet} "
+                    f"[{class_name}] - '{cell}' ({e})"
+                )
+
+    if pc_data:
+        df_pc = pd.DataFrame(pc_data).drop_duplicates()
+    else:
+        df_pc = pd.DataFrame(
+            columns=[
+                "Lớp",
+                "Môn học",
+                "Họ tên GV",
+                "Mã định danh",
+                "Thứ",
+                "Tiết"
+            ]
+        )
+
     return df_pc, unmatched_log
-
 @st.cache_data(ttl=300)
 def load_flat_tkb(thang, tuan):
     """
@@ -192,12 +366,36 @@ def parse_date_ddmmyyyy(value):
     return None
 
 
+def parse_datetime_ddmmyyyy_hhmmss(value):
+    """Đọc thời điểm dạng dd/mm/yyyy HH:MM:SS; sai định dạng thì trả về datetime nhỏ nhất."""
+    if isinstance(value, datetime):
+        return value
+    text = str(value or "").strip()
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            pass
+    return datetime.min
+
+
 TKB_PHANCONG_SHEET = "TKB_PhanCong"
+TKB_HIEULUC_SHEET = "TKB_HieuLuc"
+TKB_PHANG_COLUMNS = ["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"]
+TKB_HIEULUC_HEADERS = ["Tháng áp dụng", "Ngày áp dụng", "Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết", "Ngày tải", "Ghi chú"]
+
+
+def dinh_dang_thang_ap_dung(ngay_ap_dung):
+    """Trả về chuỗi MM/YYYY từ một ngày áp dụng hợp lệ."""
+    d = parse_date_ddmmyyyy(ngay_ap_dung)
+    if d is None:
+        return ""
+    return f"{d.month:02d}/{d.year}"
 
 
 def ensure_tkb_phancong_sheet():
     """Tạo/chuẩn hóa sheet TKB_PhanCong nếu chưa có."""
-    headers = ["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"]
+    headers = TKB_PHANG_COLUMNS
     try:
         ws = sheet.worksheet(TKB_PHANCONG_SHEET)
     except Exception:
@@ -214,6 +412,24 @@ def ensure_tkb_phancong_sheet():
     return ws
 
 
+def ensure_tkb_hieuluc_sheet():
+    """Tạo/chuẩn hóa sheet TKB_HieuLuc nếu chưa có."""
+    try:
+        ws = sheet.worksheet(TKB_HIEULUC_SHEET)
+    except Exception:
+        ws = sheet.add_worksheet(title=TKB_HIEULUC_SHEET, rows="5000", cols="20")
+        ws.update("A1", [TKB_HIEULUC_HEADERS])
+        return ws
+
+    try:
+        row_1 = ws.row_values(1)
+        if not row_1:
+            ws.update("A1", [TKB_HIEULUC_HEADERS])
+    except Exception:
+        pass
+    return ws
+
+
 @st.cache_data(ttl=300)
 def load_tkb_phancong():
     """Đọc TKB hiện hành từ sheet TKB_PhanCong."""
@@ -223,12 +439,126 @@ def load_tkb_phancong():
             return chuan_hoa_df_tkb_phang(pd.DataFrame(data[1:], columns=data[0]))
     except Exception:
         pass
-    return pd.DataFrame(columns=["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"])
+    return pd.DataFrame(columns=TKB_PHANG_COLUMNS)
 
 
-def save_tkb_to_phancong(df_pc):
-    """Ghi đè TKB đã quét vào sheet TKB_PhanCong."""
+@st.cache_data(ttl=300)
+def load_tkb_hieuluc_all():
+    """Đọc toàn bộ dữ liệu TKB_HieuLuc."""
+    try:
+        data = sheet.worksheet(TKB_HIEULUC_SHEET).get_all_values()
+        if len(data) > 1:
+            df = pd.DataFrame(data[1:], columns=data[0])
+            for col in TKB_HIEULUC_HEADERS:
+                if col not in df.columns:
+                    df[col] = ""
+            df = df[TKB_HIEULUC_HEADERS]
+            for col in TKB_HIEULUC_HEADERS:
+                df[col] = df[col].astype(str).fillna("").str.strip()
+            df["Mã định danh"] = df["Mã định danh"].str.replace(r"\.0$", "", regex=True).str.strip()
+            df["Tiết"] = df["Tiết"].str.replace(r"\.0$", "", regex=True).str.strip()
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame(columns=TKB_HIEULUC_HEADERS)
+
+
+def append_tkb_hieuluc(df_pc, ngay_ap_dung, ghi_chu=""):
+    """Ghi một phiên bản TKB vào sheet TKB_HieuLuc theo ngày áp dụng."""
+    ngay_hl = parse_date_ddmmyyyy(ngay_ap_dung)
+    if ngay_hl is None:
+        raise ValueError("Ngày áp dụng TKB không hợp lệ.")
+
     df_up = chuan_hoa_df_tkb_phang(df_pc).astype(str).fillna("")
+    if df_up.empty:
+        return 0
+
+    ws = ensure_tkb_hieuluc_sheet()
+    thang_ap_dung = dinh_dang_thang_ap_dung(ngay_hl)
+    ngay_ap_dung_str = ngay_hl.strftime("%d/%m/%Y")
+    ngay_tai_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+
+    rows = []
+    for _, row in df_up.iterrows():
+        rows.append([
+            thang_ap_dung,
+            ngay_ap_dung_str,
+            row.get("Lớp", ""),
+            row.get("Môn học", ""),
+            row.get("Họ tên GV", ""),
+            row.get("Mã định danh", ""),
+            row.get("Thứ", ""),
+            row.get("Tiết", ""),
+            ngay_tai_str,
+            ghi_chu,
+        ])
+
+    ws.append_rows(rows, value_input_option="USER_ENTERED")
+    st.cache_data.clear()
+    return len(rows)
+
+
+def seed_tkb_phancong_to_hieuluc_if_needed(ngay_ap_dung):
+    """
+    Khi lần đầu dùng TKB_HieuLuc, tự lưu TKB_PhanCong hiện có làm bản nền của tháng.
+    Mục đích: nếu TKB mới áp dụng giữa tháng, các ngày trước đó vẫn còn bản TKB cũ để tra cứu.
+    """
+    ngay_hl = parse_date_ddmmyyyy(ngay_ap_dung)
+    if ngay_hl is None:
+        return 0
+
+    df_current = load_tkb_phancong()
+    if df_current.empty:
+        return 0
+
+    df_hl = load_tkb_hieuluc_all()
+    if not df_hl.empty:
+        ngay_series = df_hl["Ngày áp dụng"].apply(parse_date_ddmmyyyy)
+        if any((d is not None and d <= ngay_hl) for d in ngay_series):
+            return 0
+
+    ngay_nen = date(ngay_hl.year, ngay_hl.month, 1)
+    if ngay_nen >= ngay_hl:
+        return 0
+
+    return append_tkb_hieuluc(
+        df_current,
+        ngay_nen,
+        "Tự động lưu TKB_PhanCong hiện có làm bản nền trước khi cập nhật TKB mới."
+    )
+
+
+def save_tkb_to_phancong(df_pc, ngay_ap_dung=None, ghi_chu=""):
+    """
+    Lưu TKB đã quét.
+    - Nếu không truyền ngày áp dụng: giữ hành vi cũ, ghi đè TKB_PhanCong.
+    - Nếu có ngày áp dụng: lưu vào TKB_HieuLuc; chỉ cập nhật TKB_PhanCong khi ngày áp dụng không sau hôm nay.
+    """
+    df_up = chuan_hoa_df_tkb_phang(df_pc).astype(str).fillna("")
+
+    if ngay_ap_dung is not None:
+        ngay_hl = parse_date_ddmmyyyy(ngay_ap_dung)
+        if ngay_hl is None:
+            raise ValueError("Ngày áp dụng TKB không hợp lệ.")
+
+        so_dong_nen = seed_tkb_phancong_to_hieuluc_if_needed(ngay_hl)
+        so_dong_hieuluc = append_tkb_hieuluc(df_up, ngay_hl, ghi_chu)
+
+        so_dong_phancong = 0
+        if ngay_hl <= datetime.now().date():
+            ws = ensure_tkb_phancong_sheet()
+            ws.clear()
+            data = [df_up.columns.tolist()] + df_up.values.tolist()
+            ws.update("A1", data)
+            so_dong_phancong = len(df_up)
+
+        st.cache_data.clear()
+        return {
+            "so_dong_hieuluc": so_dong_hieuluc,
+            "so_dong_phancong": so_dong_phancong,
+            "so_dong_nen": so_dong_nen,
+        }
+
     ws = ensure_tkb_phancong_sheet()
     ws.clear()
     data = [df_up.columns.tolist()] + df_up.values.tolist()
@@ -237,41 +567,61 @@ def save_tkb_to_phancong(df_pc):
     return len(df_up)
 
 
+def get_tkb_from_hieuluc_by_date(target_date):
+    """Lấy TKB hiệu lực tại một ngày: ngày áp dụng gần nhất và không sau ngày cần tính."""
+    target = parse_date_ddmmyyyy(target_date)
+    if target is None:
+        return pd.DataFrame(columns=TKB_PHANG_COLUMNS)
+
+    df_hl = load_tkb_hieuluc_all()
+    if df_hl.empty:
+        return pd.DataFrame(columns=TKB_PHANG_COLUMNS)
+
+    df_work = df_hl.copy()
+    df_work["__ngay_ap_dung"] = df_work["Ngày áp dụng"].apply(parse_date_ddmmyyyy)
+    df_work = df_work[df_work["__ngay_ap_dung"].notna()]
+    df_work = df_work[df_work["__ngay_ap_dung"] <= target]
+    if df_work.empty:
+        return pd.DataFrame(columns=TKB_PHANG_COLUMNS)
+
+    ngay_chon = max(df_work["__ngay_ap_dung"])
+    df_selected = df_work[df_work["__ngay_ap_dung"] == ngay_chon].copy()
+    df_selected["__ngay_tai"] = df_selected["Ngày tải"].apply(parse_datetime_ddmmyyyy_hhmmss)
+    thoi_diem_tai_chon = max(df_selected["__ngay_tai"])
+    df_selected = df_selected[df_selected["__ngay_tai"] == thoi_diem_tai_chon].copy()
+    return chuan_hoa_df_tkb_phang(df_selected[TKB_PHANG_COLUMNS])
+
+
 @st.cache_data(ttl=300)
 def load_flat_tkb_by_date(target_date):
     """
-    Lấy TKB đang dùng.
-    Quy tắc vận hành hiện nay: TKB_PhanCong là nguồn chính thức hiện hành.
-    target_date được giữ trong tham số để tương thích với các luồng cũ.
-    Nếu TKB_PhanCong trống/chưa có, fallback về TKB_{thang}_W{tuan} cũ.
+    Lấy TKB theo ngày hiệu lực.
+    Quy tắc: chọn bản TKB có Ngày áp dụng <= ngày cần tính và gần ngày cần tính nhất.
+    Nếu TKB_HieuLuc chưa có dữ liệu phù hợp, fallback về TKB_PhanCong, sau đó fallback về TKB_{thang}_W{tuan} cũ.
     """
+    target = parse_date_ddmmyyyy(target_date)
+    if target is None:
+        return pd.DataFrame(columns=TKB_PHANG_COLUMNS)
+
+    df_hl = get_tkb_from_hieuluc_by_date(target)
+    if not df_hl.empty:
+        return df_hl
+
     df_current = load_tkb_phancong()
     if not df_current.empty:
         return df_current
-
-    target = parse_date_ddmmyyyy(target_date)
-    if target is None:
-        return pd.DataFrame(columns=["Lớp", "Môn học", "Họ tên GV", "Mã định danh", "Thứ", "Tiết"])
 
     tuan_legacy = (target.day - 1) // 7 + 1
     return load_flat_tkb(target.month, tuan_legacy)
 
 
 def build_tkb_by_date_cache(month, year):
-    """
-    Tạo cache TKB theo từng ngày trong tháng.
-    Với chuẩn hiện hành, toàn bộ tháng dùng dữ liệu TKB_PhanCong hiện tại.
-    Vẫn giữ dạng dict theo ngày để không phải sửa hàm xuất Excel/chấm công.
-    """
+    """Tạo cache TKB theo từng ngày trong tháng, mỗi ngày lấy đúng TKB hiệu lực của ngày đó."""
     last_day = calendar.monthrange(int(year), int(month))[1]
-    df_current = load_tkb_phancong()
     cache = {}
     for day in range(1, last_day + 1):
         d = date(int(year), int(month), day)
-        if not df_current.empty:
-            cache[d.strftime("%d/%m/%Y")] = df_current
-        else:
-            cache[d.strftime("%d/%m/%Y")] = load_flat_tkb_by_date(d)
+        cache[d.strftime("%d/%m/%Y")] = load_flat_tkb_by_date(d)
     return cache
 
 
@@ -948,7 +1298,12 @@ else:
             if uploaded_file:
                 with st.spinner("Đang AI tự động quét và nhận diện ma trận TKB..."):
                     df_raw = pd.read_excel(uploaded_file, header=None)
-                    df_pc, log = scan_matrix_from_dataframe(df_raw, ds_gv)
+                    # Đọc lại DS_GV mới nhất trước khi quét TKB.
+                    # Lý do: Giám thị/BGH có thể vừa bổ sung hoặc sửa Mã TKB trực tiếp trên Google Sheets.
+                    load_ds_gv.clear()
+                    ds_gv_upload = load_ds_gv()
+                    st.write(ds_gv_upload[ds_gv_upload.astype(str).apply(lambda r: r.str.contains("Liam", case=False, na=False).any(), axis=1)])
+                    df_pc, log = scan_matrix_from_dataframe(df_raw, ds_gv_upload)
                 
                 if df_pc.empty:
                     st.error("❌ Không thể đọc được file TKB. Vui lòng đảm bảo cấu trúc file chuẩn.")
@@ -961,16 +1316,33 @@ else:
                     
                     st.dataframe(normalize_dataframe_for_streamlit(df_pc), width='stretch', height=250)
                     
-                    st.markdown("### Lưu vào TKB_PhanCong")
-                    st.caption("Khi lưu, app sẽ ghi đè toàn bộ sheet TKB_PhanCong. Sau đó có thể sửa trực tiếp trong sheet này; các lần xuất chấm công/lương sẽ đọc TKB_PhanCong hiện hành.")
+                    st.markdown("### Lưu TKB theo ngày áp dụng")
+                    st.caption("Ngày áp dụng quyết định TKB nào được dùng khi chấm công, báo cáo và xuất lương. Ngày tải chỉ là thông tin nhật ký.")
+                    col_ngay_hl, col_note_hl = st.columns([1, 2])
+                    with col_ngay_hl:
+                        ngay_ap_dung_tkb = st.date_input("Ngày bắt đầu áp dụng TKB:", value=datetime.now().date(), key="ngay_ap_dung_tkb_upload")
+                    with col_note_hl:
+                        ghi_chu_tkb = st.text_input("Ghi chú phiên bản TKB:", value="", key="ghi_chu_tkb_upload")
 
-                    if st.button("💾 Ghi đè vào TKB_PhanCong", type="primary"):
-                        with st.spinner("Đang cập nhật sheet TKB_PhanCong..."):
+                    if st.button("💾 Lưu TKB theo ngày áp dụng", type="primary"):
+                        with st.spinner("Đang cập nhật TKB_HieuLuc trên Google Sheets..."):
                             try:
-                                so_dong = save_tkb_to_phancong(df_pc)
-                                st.success(f"🎉 Đã cập nhật TKB_PhanCong với {so_dong} dòng phân công hợp lệ.")
+                                ket_qua_luu = save_tkb_to_phancong(df_pc, ngay_ap_dung_tkb, ghi_chu_tkb)
+                                st.success(
+                                    f"🎉 Đã lưu {ket_qua_luu['so_dong_hieuluc']} dòng vào TKB_HieuLuc, "
+                                    f"áp dụng từ {ngay_ap_dung_tkb.strftime('%d/%m/%Y')}."
+                                )
+                                if ket_qua_luu.get('so_dong_nen', 0) > 0:
+                                    st.info(
+                                        f"Đã tự động lưu {ket_qua_luu['so_dong_nen']} dòng TKB_PhanCong hiện có "
+                                        "làm bản nền để giữ dữ liệu trước ngày áp dụng mới."
+                                    )
+                                if ket_qua_luu.get('so_dong_phancong', 0) > 0:
+                                    st.info("TKB_PhanCong cũng đã được cập nhật vì ngày áp dụng không sau ngày hiện tại.")
+                                else:
+                                    st.info("TKB_PhanCong chưa ghi đè vì ngày áp dụng nằm sau ngày hiện tại; TKB mới sẽ tự có hiệu lực đúng ngày đã chọn.")
                             except Exception as e:
-                                st.error(f"❌ Không cập nhật được TKB_PhanCong: {e}")
+                                st.error(f"❌ Không cập nhật được TKB_HieuLuc: {e}")
 
         with tab_gt3:
             st.subheader("Báo cáo Kiểm dò chéo Sổ đầu bài")
