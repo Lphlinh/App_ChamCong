@@ -66,18 +66,18 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
         if text.lower() == "nan":
             return None, None, "EMPTY"
 
-        if "-" in text:
-            parts = text.split("-")
-        elif "_" in text:
-            parts = text.split("_")
-        else:
+    # Chuẩn hóa dấu phân cách: Sử_C.Loan -> Sử-C.Loan
+        text = text.replace("_", "-")
+
+        if "-" not in text:
             return None, None, "NO_SEPARATOR"
+
+        parts = text.split("-")
 
         mon = parts[0].strip()
         gv_raw = parts[-1].strip()
 
         return mon, gv_raw, ""
-
     def tach_ten_gv_tu_ma(gv_raw):
         raw = str(gv_raw or "").strip()
 
