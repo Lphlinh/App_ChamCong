@@ -60,24 +60,20 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
     def tach_mon_va_gv(cell_text):
         text = str(cell_text or "").strip()
 
-        if not text:
+        if not text or text.lower() == "nan":
             return None, None, "EMPTY"
 
-        if text.lower() == "nan":
-            return None, None, "EMPTY"
-
-    # Chuẩn hóa dấu phân cách: Sử_C.Loan -> Sử-C.Loan
         text = text.replace("_", "-")
 
         if "-" not in text:
             return None, None, "NO_SEPARATOR"
 
         parts = text.split("-")
-
         mon = parts[0].strip()
         gv_raw = parts[-1].strip()
 
         return mon, gv_raw, ""
+
     def tach_ten_gv_tu_ma(gv_raw):
         raw = str(gv_raw or "").strip()
 
@@ -90,8 +86,8 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
             "cô "
         ]
 
-        gv_short = raw
         matched = False
+        gv_short = raw
 
         for p in prefixes:
             if gv_short.lower().startswith(p):
@@ -102,11 +98,28 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
         if not matched:
             return "", False
 
-        # T.Quốc Anh -> Anh
-        if " " in gv_short:
-            gv_short = gv_short.split()[-1].strip()
+        # Quy tắc mới:
+        # - C.Loan -> Loan
+        # - T.Quốc Anh -> Quốc Anh
+        # - T.Nguyễn Quốc Anh -> Quốc Anh
+        words = gv_short.split()
+        if len(words) >= 2:
+            gv_short = " ".join(words[-2:])
+        elif len(words) == 1:
+            gv_short = words[0]
+        else:
+            gv_short = ""
 
-        return gv_short, True
+        return gv_short.strip(), True
+
+    def tao_danh_sach_ma_tkb(row):
+        codes = []
+
+        ma_tkb = str(row.get("Mã TKB", "") or "").strip()
+        if ma_tkb:
+            codes.extend([x.strip() for x in ma_tkb.split(",") if x.strip()])
+
+        return codes
 
     def goi_y_loi_chinh_ta(gv_short, ds_gv_source):
         candidates = []
@@ -123,7 +136,11 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
                 ten = ten.strip()
                 if ten:
                     candidates.append(ten)
-                    candidates.append(ten.split()[-1])
+                    words = ten.split()
+                    if len(words) >= 2:
+                        candidates.append(" ".join(words[-2:]))
+                    elif len(words) == 1:
+                        candidates.append(words[0])
 
         candidates = list(set(candidates))
 
@@ -142,9 +159,7 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
     header_idx = -1
 
     for i in range(min(15, df_tkb.shape[0])):
-        row_str = " ".join(
-            [str(x).lower() for x in df_tkb.iloc[i].values]
-        )
+        row_str = " ".join([str(x).lower() for x in df_tkb.iloc[i].values])
 
         if "thứ" in row_str and "tiết" in row_str:
             header_idx = i
@@ -179,81 +194,65 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
 
             if "2" in val_thu_lower or "hai" in val_thu_lower:
                 current_thu = "Thứ Hai"
-
             elif "3" in val_thu_lower or "ba" in val_thu_lower:
                 current_thu = "Thứ Ba"
-
             elif "4" in val_thu_lower or "tư" in val_thu_lower:
                 current_thu = "Thứ Tư"
-
             elif "5" in val_thu_lower or "năm" in val_thu_lower:
                 current_thu = "Thứ Năm"
-
             elif "6" in val_thu_lower or "sáu" in val_thu_lower:
                 current_thu = "Thứ Sáu"
-
             elif "7" in val_thu_lower or "bảy" in val_thu_lower:
                 current_thu = "Thứ Bảy"
 
-        val_tiet = str(
-            df_tkb.iloc[row_idx, 1]
-        ).replace(".0", "").strip()
+        val_tiet = str(df_tkb.iloc[row_idx, 1]).replace(".0", "").strip()
 
         if val_tiet:
             current_tiet = val_tiet
 
         for col_idx, class_name in classes_info:
 
-            cell = str(
-                df_tkb.iloc[row_idx, col_idx]
-            ).strip()
+            cell = str(df_tkb.iloc[row_idx, col_idx]).strip()
 
             try:
                 mon, gv_raw, status = tach_mon_va_gv(cell)
 
-                # Ô trống / nan
                 if status == "EMPTY":
                     continue
 
-                # SHDC, CLB, hoạt động...
                 if status == "NO_SEPARATOR":
                     continue
 
                 gv_short, has_teacher_prefix = tach_ten_gv_tu_ma(gv_raw)
 
-                # Không có T./C./Mr./Mrs.
                 if not has_teacher_prefix:
                     continue
 
                 match = pd.DataFrame()
 
                 if "Mã TKB" in ds_gv.columns:
-
-                    mask = ds_gv["Mã TKB"].astype(str).apply(
-                        lambda x: gv_short.lower() in [
+                    mask = ds_gv.apply(
+                        lambda row: gv_short.lower() in [
                             code.strip().lower()
-                            for code in str(x).split(",")
-                            if code.strip()
-                        ]
+                            for code in tao_danh_sach_ma_tkb(row)
+                        ],
+                        axis=1
                     )
-
                     match = ds_gv[mask]
 
                 if match.empty and "Họ tên Giáo viên" in ds_gv.columns:
-
                     match = ds_gv[
                         ds_gv["Họ tên Giáo viên"]
                         .astype(str)
-                        .str.contains(
-                            gv_short,
-                            case=False,
-                            na=False,
-                            regex=False
+                        .str.lower()
+                        .apply(
+                            lambda ten: gv_short.lower() == " ".join(ten.split()[-2:])
+                            if len(ten.split()) >= 2
+                            else gv_short.lower() == ten.strip().lower()
                         )
                     ]
 
                 if not match.empty:
-
                     pc_data.append({
                         "Lớp": class_name,
                         "Môn học": mon,
@@ -264,11 +263,7 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
                     })
 
                 else:
-
-                    goi_y = goi_y_loi_chinh_ta(
-                        gv_short,
-                        ds_gv
-                    )
+                    goi_y = goi_y_loi_chinh_ta(gv_short, ds_gv)
 
                     unmatched_log.append(
                         f"👻 Bỏ qua: {current_thu} T.{current_tiet} "
@@ -277,10 +272,12 @@ def scan_matrix_from_dataframe(df_tkb, ds_gv):
                     )
 
             except Exception as e:
+                print(f"[SCAN_TKB_ERROR] {repr(e)} | Cell={cell}")
 
                 unmatched_log.append(
-                    f"❌ Lỗi: {current_thu} T.{current_tiet} "
-                    f"[{class_name}] - '{cell}' ({e})"
+                    f"❌ Lỗi đọc ô TKB: {current_thu} T.{current_tiet} "
+                    f"[{class_name}] - '{cell}'. "
+                    "Vui lòng kiểm tra lại định dạng ô này trong file TKB."
                 )
 
     if pc_data:
@@ -464,7 +461,12 @@ def load_tkb_hieuluc_all():
 
 
 def append_tkb_hieuluc(df_pc, ngay_ap_dung, ghi_chu=""):
-    """Ghi một phiên bản TKB vào sheet TKB_HieuLuc theo ngày áp dụng."""
+    """
+    Ghi TKB vào TKB_HieuLuc.
+    Quy tắc mới:
+    - Nếu ngày áp dụng đã có dữ liệu: backup các dòng cũ rồi xóa, sau đó ghi bản mới.
+    - Nếu ngày áp dụng chưa có: ghi mới.
+    """
     ngay_hl = parse_date_ddmmyyyy(ngay_ap_dung)
     if ngay_hl is None:
         raise ValueError("Ngày áp dụng TKB không hợp lệ.")
@@ -474,10 +476,50 @@ def append_tkb_hieuluc(df_pc, ngay_ap_dung, ghi_chu=""):
         return 0
 
     ws = ensure_tkb_hieuluc_sheet()
-    thang_ap_dung = dinh_dang_thang_ap_dung(ngay_hl)
     ngay_ap_dung_str = ngay_hl.strftime("%d/%m/%Y")
+    thang_ap_dung = dinh_dang_thang_ap_dung(ngay_hl)
     ngay_tai_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
+    # Đọc dữ liệu hiện có để tìm các dòng trùng ngày áp dụng
+    data_old = ws.get_all_values()
+    rows_to_backup = []
+    row_indexes_to_delete = []
+
+    if len(data_old) > 1:
+        headers = data_old[0]
+        try:
+            idx_ngay = headers.index("Ngày áp dụng")
+            for row_index, row in enumerate(data_old[1:], start=2):
+                if len(row) > idx_ngay and str(row[idx_ngay]).strip() == ngay_ap_dung_str:
+                    rows_to_backup.append(row)
+                    row_indexes_to_delete.append(row_index)
+        except ValueError:
+            pass
+
+    # Backup các dòng cũ trước khi xóa
+    if rows_to_backup:
+        backup_sheet_name = "TKB_HieuLuc_Backup"
+        try:
+            ws_backup = sheet.worksheet(backup_sheet_name)
+        except Exception:
+            ws_backup = sheet.add_worksheet(title=backup_sheet_name, rows="5000", cols="20")
+            ws_backup.update("A1", [TKB_HIEULUC_HEADERS + ["Thời điểm backup", "Lý do backup"]])
+
+        backup_time = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        backup_rows = []
+        for row in rows_to_backup:
+            row_fixed = row[:len(TKB_HIEULUC_HEADERS)]
+            while len(row_fixed) < len(TKB_HIEULUC_HEADERS):
+                row_fixed.append("")
+            backup_rows.append(row_fixed + [backup_time, f"Thay thế TKB cùng ngày áp dụng {ngay_ap_dung_str}"])
+
+        ws_backup.append_rows(backup_rows, value_input_option="USER_ENTERED")
+
+        # Xóa từ dưới lên để không lệch chỉ số dòng
+        for row_index in sorted(row_indexes_to_delete, reverse=True):
+            ws.delete_rows(row_index)
+
+    # Ghi bản TKB mới
     rows = []
     for _, row in df_up.iterrows():
         rows.append([
@@ -700,58 +742,98 @@ def gv_duoc_tinh_o_ngay(ngay_nghi_viec, ngay_iter):
 # ==========================================
 def form_them_giao_vien(form_key_prefix):
     st.subheader("Thêm Giáo viên mới vào hệ thống (Cập nhật Tab DS_GV)")
+
     with st.form(f"form_them_gv_{form_key_prefix}"):
         col_g1, col_g2 = st.columns(2)
+
         with col_g1:
             ma_gv = st.text_input("Mã định danh (Cột A) *", help="Ví dụ: GV099").strip()
             ten_gv = st.text_input("Họ tên Giáo viên (Cột B) *").strip()
             email_gv = st.text_input("Email (Cột D)").strip()
+
         with col_g2:
             to_cm = st.text_input("Tổ chuyên môn (Cột C)").strip()
-            ma_tkb = st.text_input("Mã TKB (Cột E)", help="Ký hiệu trên TKB. VD: T.Anh, C.Lan").strip()
-            # Bổ sung: Thêm trường nhập "Ngày nghỉ việc" [cite: 18, 33, 46, 48]
+            ma_tkb = st.text_input(
+                "Mã TKB (Cột E) *",
+                help="Nhập mã đúng như dùng trong TKB. Có thể nhập nhiều mã, cách nhau bằng dấu phẩy. Ví dụ: Quốc Anh, QAnh, Q.Anh"
+            ).strip()
             ngay_nghi = st.text_input("Ngày nghỉ việc (Nếu có)", help="Định dạng: dd/mm/yyyy").strip()
 
         submit_btn = st.form_submit_button("💾 Lưu Giáo viên", type="primary")
 
         if submit_btn:
-            if not ma_gv or not ten_gv:
-                st.error("⚠️ Vui lòng nhập đầy đủ Mã định danh và Họ tên Giáo viên.")
-            elif ma_gv in ds_gv['Mã định danh'].astype(str).values:
-                st.error("❌ Lỗi nghiêm trọng: Mã định danh này đã tồn tại! Hệ thống yêu cầu mỗi mã định danh là duy nhất.")
-            else:
-                mask_name = ds_gv['Họ tên Giáo viên'].astype(str).str.strip().str.lower() == ten_gv.lower()
-                df_same_name = ds_gv[mask_name]
-                is_duplicate = False
-                loi_trung = ""
-                
-                if not df_same_name.empty:
-                    for _, row in df_same_name.iterrows():
-                        old_to = str(row.get('Tổ chuyên môn', '')).strip().lower()
-                        old_email = str(row.get('Email', '')).strip().lower()
-                        old_matkb = str(row.get('Mã TKB', '')).strip().lower()
-                        if to_cm and to_cm.lower() == old_to:
-                            is_duplicate, loi_trung = True, "Tổ chuyên môn"
-                            break
-                        if email_gv and email_gv.lower() == old_email:
-                            is_duplicate, loi_trung = True, "Email"
-                            break
-                        if ma_tkb and ma_tkb.lower() == old_matkb:
-                            is_duplicate, loi_trung = True, "Mã TKB"
-                            break
-                
-                if is_duplicate:
-                    st.error(f"❌ Phát hiện trùng lặp: Giáo viên '{ten_gv}' có cùng {loi_trung} với một hồ sơ đã tồn tại!")
-                else:
-                    with st.spinner("Đang lưu vào Google Sheets..."):
-                        try:
-                            # Cập nhật: Lưu 6 cột bao gồm cả Ngày nghỉ việc [cite: 18, 48]
-                            new_row = [ma_gv, ten_gv, to_cm, email_gv, ma_tkb, ngay_nghi]
-                            sheet.worksheet("DS_GV").append_row(new_row)
-                            load_ds_gv.clear()
-                            st.success(f"✅ Đã thêm giáo viên **{ten_gv}** thành công! Hệ thống đã được cập nhật.")
-                        except Exception as e:
-                            st.error(f"❌ Có lỗi xảy ra khi kết nối Google Sheets: {e}")
+            if not ma_gv or not ten_gv or not ma_tkb:
+                st.error("⚠️ Vui lòng nhập đầy đủ Mã định danh, Họ tên Giáo viên và Mã TKB.")
+                return
+
+            if ngay_nghi:
+                try:
+                    datetime.strptime(ngay_nghi, "%d/%m/%Y")
+                except Exception:
+                    st.error("⚠️ Ngày nghỉ việc chưa đúng định dạng dd/mm/yyyy.")
+                    return
+
+            if ma_gv in ds_gv['Mã định danh'].astype(str).values:
+                st.error("⚠️ Mã định danh này đã tồn tại. Vui lòng kiểm tra lại DS_GV.")
+                return
+
+            mask_name = ds_gv['Họ tên Giáo viên'].astype(str).str.strip().str.lower() == ten_gv.lower()
+            df_same_name = ds_gv[mask_name]
+
+            is_duplicate = False
+            loi_trung = ""
+
+            if not df_same_name.empty:
+                for _, row in df_same_name.iterrows():
+                    old_to = str(row.get('Tổ chuyên môn', '')).strip().lower()
+                    old_email = str(row.get('Email', '')).strip().lower()
+                    old_matkb_list = [
+                        x.strip().lower()
+                        for x in str(row.get('Mã TKB', '')).split(',')
+                        if x.strip()
+                    ]
+
+                    new_matkb_list = [
+                        x.strip().lower()
+                        for x in ma_tkb.split(',')
+                        if x.strip()
+                    ]
+
+                    if to_cm and to_cm.lower() == old_to:
+                        is_duplicate, loi_trung = True, "Tổ chuyên môn"
+                        break
+
+                    if email_gv and email_gv.lower() == old_email:
+                        is_duplicate, loi_trung = True, "Email"
+                        break
+
+                    if set(new_matkb_list) & set(old_matkb_list):
+                        is_duplicate, loi_trung = True, "Mã TKB"
+                        break
+
+            if is_duplicate:
+                st.error(f"⚠️ Phát hiện trùng lặp: Giáo viên '{ten_gv}' có cùng {loi_trung} với hồ sơ đã tồn tại.")
+                return
+
+            with st.spinner("Đang lưu vào Google Sheets..."):
+                try:
+                    new_row = [ma_gv, ten_gv, to_cm, email_gv, ma_tkb, ngay_nghi]
+                    sheet.worksheet("DS_GV").append_row(new_row)
+                    load_ds_gv.clear()
+
+                    st.success(f"✅ Đã thêm giáo viên **{ten_gv}** vào DS_GV.")
+                    st.info(
+                        "Lưu ý: Nếu giáo viên có dạy trong TKB, cần bảo đảm TKB dùng đúng Mã TKB vừa khai báo. "
+                        "Nếu giáo viên có tính lương, cần kiểm tra ID giáo viên trong file lương."
+                    )
+
+                except Exception as e:
+                    print(f"[ADD_GV_ERROR] {repr(e)}")
+                    st.error(
+                        "❌ Không lưu được giáo viên vào Google Sheets. "
+                        "Vui lòng kiểm tra kết nối mạng, quyền truy cập Google Sheet của Service Account, "
+                        "hoặc thử lại sau."
+                    )
 
 # ==========================================
 # 4. HÀM TẠO EXCEL MẪU (CÓ TÙY CHỌN KHÓA SHEET)
